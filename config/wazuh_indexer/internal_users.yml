@@ -1,0 +1,33 @@
+# Wazuh indexer internal users
+# admin password: SecretPassword (change via WAZUH_INDEXER_PASSWORD in .env)
+# These hashes match the defaults — regenerate with setup.sh if you change passwords
+
+_meta:
+  type: "internalusers"
+  config_version: 2
+
+admin:
+  hash: "$2y$12$K/SpwjtB.wOHJ/Nc6GVRDuc1h0rM1DfvziFRNPtk27P.c4yDr9njO"
+  reserved: true
+  backend_roles:
+    - "admin"
+  description: "Wazuh indexer admin user"
+
+kibanaserver:
+  hash: "$2a$12$4AcgAt3xwOWadA5s5blL6ev39OXDNhmOesEoo33eZtrq2N0YrU3H."
+  reserved: true
+  description: "OpenSearch Dashboards user"
+
+wazuh:
+  hash: "$2y$12$K/SpwjtB.wOHJ/Nc6GVRDuc1h0rM1DfvziFRNPtk27P.c4yDr9njO"
+  reserved: false
+  backend_roles:
+    - "wazuh_ui_user"
+  description: "Wazuh user"
+
+wazuh_admin:
+  hash: "$2y$12$K/SpwjtB.wOHJ/Nc6GVRDuc1h0rM1DfvziFRNPtk27P.c4yDr9njO"
+  reserved: false
+  backend_roles:
+    - "wazuh_ui_admin"
+  description: "Wazuh admin user"
