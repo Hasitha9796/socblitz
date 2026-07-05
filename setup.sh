@@ -70,21 +70,10 @@ docker compose build
 
 section "Starting all services"
 # Start in dependency order so healthchecks pass before dependents start
-echo "  [1/4] Infrastructure (postgres, redis, minio)..."
+echo "  [1/2] Infrastructure (postgres, redis, minio)..."
 docker compose up -d postgres redis minio
 
-echo "  [2/4] Monitoring (grafana, influxdb)..."
-docker compose up -d grafana influxdb
-
-echo "  [3/4] Graylog stack (mongo → opensearch → graylog)..."
-docker compose up -d graylog-mongo graylog-opensearch
-echo "  Waiting for Graylog OpenSearch..."
-until docker compose exec -T graylog-opensearch curl -sf http://localhost:9200/_cluster/health 2>/dev/null | grep -q 'green\|yellow'; do
-    printf "."; sleep 5
-done; echo " ready"
-docker compose up -d graylog
-
-echo "  [4/4] Wazuh stack (indexer → manager) and SocBlitz..."
+echo "  [2/2] Wazuh stack (indexer → manager) and SocBlitz..."
 docker compose up -d wazuh-indexer
 echo "  Waiting for Wazuh indexer..."
 until docker compose exec -T wazuh-indexer curl -sk -u "admin:${WAZUH_INDEXER_PASSWORD:-SecretPassword}" https://localhost:9200/_cluster/health 2>/dev/null | grep -q 'green\|yellow'; do
@@ -107,14 +96,9 @@ echo "  ┌───────────────────────
 echo "  │           ⚡  SocBlitz is running!                       │"
 echo "  ├─────────────────────────────────────────────────────────┤"
 echo "  │  SocBlitz UI   → https://${HOST_IP}                    │"
-echo "  │  Graylog       → http://${HOST_IP}:9000                │"
-echo "  │  Grafana       → http://${HOST_IP}:3000                │"
-echo "  │  InfluxDB      → http://${HOST_IP}:8086                │"
 echo "  │  MinIO console → http://${HOST_IP}:9001                │"
 echo "  │  Wazuh API     → https://${HOST_IP}:55000              │"
 echo "  ├─────────────────────────────────────────────────────────┤"
 echo "  │  SocBlitz:   admin@socblitz.local / SocBlitz@Admin1!   │"
-echo "  │  Graylog:    admin / admin                              │"
-echo "  │  Grafana:    admin / SocBlitz@Grafana1                 │"
 echo "  └─────────────────────────────────────────────────────────┘"
 echo ""

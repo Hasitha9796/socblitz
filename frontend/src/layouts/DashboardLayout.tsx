@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import {
   LayoutDashboard, Bell, FolderOpen, Monitor, Shield, Workflow,
   Plug, Settings, LogOut, Zap, ChevronLeft, ChevronRight, User,
-  AlertTriangle, Activity
+  AlertTriangle, Activity, Sparkles
 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth'
 import { useQuery } from '@tanstack/react-query'
@@ -16,7 +16,9 @@ const NAV_GROUPS = [
     items: [
       { to: '/dashboard',    icon: LayoutDashboard, label: 'Overview'      },
       { to: '/alerts',       icon: Bell,            label: 'Alerts'        },
+      { to: '/events',       icon: Activity,        label: 'Events'        },
       { to: '/agents',       icon: Monitor,         label: 'Agents'        },
+      { to: '/custom-dashboard', icon: Sparkles,    label: 'Dashboard' },
     ],
   },
   {

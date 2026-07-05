@@ -9,12 +9,10 @@ import { formatDistanceToNow } from 'date-fns'
 import { api } from '../stores/auth'
 
 const CONNECTOR_META: Record<string, { label: string; desc: string; docs: string; category: string }> = {
-  wazuh_manager:   { label: 'Wazuh Manager',   desc: 'Agent management, active response, rules', docs: 'https://documentation.wazuh.com', category: 'SIEM' },
-  wazuh_indexer:   { label: 'Wazuh Indexer',   desc: 'OpenSearch — alert and vulnerability data', docs: 'https://documentation.wazuh.com', category: 'SIEM' },
-  graylog:         { label: 'Graylog',          desc: 'Log management and centralised ingestion', docs: 'https://docs.graylog.org', category: 'Log' },
-  grafana:         { label: 'Grafana',          desc: 'Dashboards and visualisation layer', docs: 'https://grafana.com/docs', category: 'Viz' },
-  velociraptor:    { label: 'Velociraptor',     desc: 'Endpoint forensics and artifact collection', docs: 'https://docs.velociraptor.app', category: 'DFIR' },
-  misp:            { label: 'MISP',             desc: 'Threat intelligence — IOCs and events', docs: 'https://www.misp-project.org', category: 'Intel' },
+  wazuh_manager:   { label: 'SocBlitz Manager',    desc: 'Agent management, active response, rules', docs: 'https://documentation.wazuh.com', category: 'SIEM' },
+  wazuh_indexer:   { label: 'SocBlitz Indexer',    desc: 'OpenSearch — alert and vulnerability data', docs: 'https://documentation.wazuh.com', category: 'SIEM' },
+  velociraptor:    { label: 'SocBlitz Forensics',  desc: 'Endpoint forensics and artifact collection', docs: 'https://docs.velociraptor.app', category: 'DFIR' },
+  misp:            { label: 'SocBlitz Threat Intel', desc: 'Threat intelligence — IOCs and events', docs: 'https://www.misp-project.org', category: 'Intel' },
   shuffle:         { label: 'Shuffle SOAR',     desc: 'Security orchestration and automation', docs: 'https://shuffler.io/docs', category: 'SOAR' },
   thehive:         { label: 'TheHive',          desc: 'Case management and investigation', docs: 'https://docs.strangebee.com', category: 'IR' },
   virustotal:      { label: 'VirusTotal',       desc: 'Multi-engine IOC reputation service', docs: 'https://developers.virustotal.com', category: 'Intel' },
@@ -25,8 +23,6 @@ const CONNECTOR_META: Record<string, { label: string; desc: string; docs: string
 
 const CATEGORY_COLOR: Record<string, string> = {
   SIEM:  'rgba(37,99,235,0.18)',
-  Log:   'rgba(103,232,249,0.12)',
-  Viz:   'rgba(245,158,11,0.12)',
   DFIR:  'rgba(168,85,247,0.15)',
   Intel: 'rgba(244,63,94,0.12)',
   SOAR:  'rgba(34,197,94,0.10)',
@@ -34,7 +30,7 @@ const CATEGORY_COLOR: Record<string, string> = {
   EDR:   'rgba(96,130,182,0.12)',
 }
 const CATEGORY_TEXT: Record<string, string> = {
-  SIEM:  '#60a5fa', Log: '#67e8f9', Viz: '#fbbf24', DFIR: '#c084fc',
+  SIEM:  '#60a5fa', DFIR: '#c084fc',
   Intel: '#f87171', SOAR: '#4ade80', IR: '#fb923c', EDR: '#94a3b8',
 }
 

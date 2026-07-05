@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Search, Filter, CheckCircle, AlertOctagon } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -20,6 +21,7 @@ const SEV_LABEL: Record<string, string> = {
 }
 
 export default function Alerts() {
+  const navigate = useNavigate()
   const [sev,    setSev]    = useState('')
   const [status, setStatus] = useState('')
   const [search, setSearch] = useState('')
@@ -182,7 +184,7 @@ export default function Alerts() {
               )}
 
               {filtered.map((a: any) => (
-                <tr key={a.id} className={`sev-${a.severity}`}>
+                <tr key={a.id} className={`sev-${a.severity}`} style={{ cursor: 'pointer' }} onClick={() => navigate(`/alerts/${a.id}`)}>
                   {/* Invisible first cell so box-shadow stripe shows */}
                   <td style={{ padding: '11px 0 11px 14px', width: 4 }} />
 
@@ -241,7 +243,7 @@ export default function Alerts() {
                         <button
                           className="btn-secondary"
                           style={{ fontSize: 11, padding: '3px 10px' }}
-                          onClick={() => updateMutation.mutate({ id: a.id, data: { status: 'in_triage' } })}
+                          onClick={(e) => { e.stopPropagation(); updateMutation.mutate({ id: a.id, data: { status: 'in_triage' } }) }}
                         >
                           Triage
                         </button>
@@ -250,7 +252,7 @@ export default function Alerts() {
                         <button
                           className="btn-ghost"
                           style={{ fontSize: 11, padding: '3px 10px' }}
-                          onClick={() => updateMutation.mutate({ id: a.id, data: { status: 'resolved' } })}
+                          onClick={(e) => { e.stopPropagation(); updateMutation.mutate({ id: a.id, data: { status: 'resolved' } }) }}
                         >
                           Resolve
                         </button>

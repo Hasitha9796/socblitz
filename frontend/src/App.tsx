@@ -6,11 +6,17 @@ import DashboardLayout from './layouts/DashboardLayout'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Alerts from './pages/Alerts'
+import AlertDetail from './pages/AlertDetail'
+import Events from './pages/Events'
+import EventDetail from './pages/EventDetail'
+import CustomDashboard from './pages/CustomDashboard'
 import Cases from './pages/Cases'
+import CaseDetail from './pages/CaseDetail'
 import Agents from './pages/Agents'
 import Connectors from './pages/Connectors'
 import ThreatIntel from './pages/ThreatIntel'
 import SOAR from './pages/SOAR'
+import WorkflowBuilder from './pages/WorkflowBuilder'
 import Settings from './pages/Settings'
 
 const queryClient = new QueryClient({
@@ -46,10 +52,17 @@ export default function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard"    element={<Dashboard />} />
             <Route path="alerts"       element={<Alerts />} />
+            <Route path="alerts/:id"   element={<AlertDetail />} />
+            <Route path="events"       element={<Events />} />
+            <Route path="events/:id"   element={<EventDetail />} />
+            <Route path="custom-dashboard" element={<CustomDashboard />} />
             <Route path="cases"        element={<Cases />} />
+            <Route path="cases/:id"    element={<CaseDetail />} />
             <Route path="agents"       element={<Agents />} />
             <Route path="threat-intel" element={<ThreatIntel />} />
             <Route path="soar"         element={<SOAR />} />
+            <Route path="soar/new"     element={<WorkflowBuilder />} />
+            <Route path="soar/:id/edit" element={<WorkflowBuilder />} />
             <Route path="connectors"   element={<Connectors />} />
             <Route path="settings"     element={<Settings />} />
           </Route>

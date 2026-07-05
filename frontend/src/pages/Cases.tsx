@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   FolderOpen, Plus, RefreshCw, Search, MessageSquare,
@@ -26,6 +27,7 @@ interface NewCaseForm {
 
 export default function Cases() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [search,     setSearch]    = useState('')
   const [statusFilt, setStatusFilt]= useState('')
   const [creating,   setCreating]  = useState(false)
@@ -56,7 +58,7 @@ export default function Cases() {
   })
 
   const filtered = (cases || []).filter((c: any) => {
-    const matchSearch = !search || [c.title, c.description, c.assignee].some((f: any) =>
+    const matchSearch = !search || [c.title, c.description, c.assignee_name].some((f: any) =>
       f?.toLowerCase().includes(search.toLowerCase()))
     const matchStatus = !statusFilt || c.status === statusFilt
     return matchSearch && matchStatus
@@ -224,7 +226,7 @@ export default function Cases() {
                 const sc = STATUS_CONFIG[c.status] || STATUS_CONFIG.open
                 const StatusIcon = sc.icon
                 return (
-                  <tr key={c.id}>
+                  <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/cases/${c.id}`)}>
                     <td>
                       <span
                         style={{
@@ -270,7 +272,7 @@ export default function Cases() {
                     </td>
 
                     <td style={{ fontSize: 12, color: 'var(--text-2)' }}>
-                      {c.assignee || <span style={{ color: 'var(--text-3)' }}>Unassigned</span>}
+                      {c.assignee_name || <span style={{ color: 'var(--text-3)' }}>Unassigned</span>}
                     </td>
 
                     <td>
@@ -298,7 +300,7 @@ export default function Cases() {
                           <button
                             className="btn-secondary"
                             style={{ fontSize: 11, padding: '3px 10px' }}
-                            onClick={() => updateMutation.mutate({ id: c.id, data: { status: 'in_progress' } })}
+                            onClick={(e) => { e.stopPropagation(); updateMutation.mutate({ id: c.id, data: { status: 'in_progress' } }) }}
                           >
                             Start
                           </button>
@@ -307,12 +309,16 @@ export default function Cases() {
                           <button
                             className="btn-secondary"
                             style={{ fontSize: 11, padding: '3px 10px' }}
-                            onClick={() => updateMutation.mutate({ id: c.id, data: { status: 'resolved' } })}
+                            onClick={(e) => { e.stopPropagation(); updateMutation.mutate({ id: c.id, data: { status: 'resolved' } }) }}
                           >
                             Resolve
                           </button>
                         )}
-                        <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }}>
+                        <button
+                          className="btn-ghost"
+                          style={{ fontSize: 11, padding: '3px 8px' }}
+                          onClick={(e) => { e.stopPropagation(); navigate(`/cases/${c.id}`) }}
+                        >
                           <Eye size={12} />
                         </button>
                       </div>

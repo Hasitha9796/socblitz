@@ -117,103 +117,103 @@ export default function ThreatIntel() {
         </form>
 
         {/* Result */}
-        {result && (
-          <div
-            style={{
-              marginTop: 16,
-              padding: 16,
-              background: 'var(--raise)',
-              border: `1px solid ${VERDICT_COLOR[result.verdict?.toLowerCase()] || 'var(--line)'}30`,
-              borderRadius: 8,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-              {result.verdict?.toLowerCase() === 'clean'
-                ? <CheckCircle size={18} color="#22c55e" />
-                : result.verdict?.toLowerCase() === 'malicious'
-                  ? <XCircle size={18} color="#f43f5e" />
-                  : <AlertTriangle size={18} color="#f97316" />}
-              <span
-                style={{
-                  fontSize: 16, fontWeight: 700, textTransform: 'capitalize',
-                  color: VERDICT_COLOR[result.verdict?.toLowerCase()] || 'var(--text-1)',
-                }}
-              >
-                {result.verdict || 'Unknown'}
-              </span>
-              {result.score != null && (
+        {result && (() => {
+          const verdictLabel = !result.sources
+            ? 'unknown'
+            : result.verdict?.malicious ? 'malicious' : 'clean'
+          const confidence: number | null = result.verdict?.confidence ?? null
+          const reasons: string[] = result.verdict?.reasons ?? []
+          const sources: Record<string, any> = result.sources ?? {}
+
+          return (
+            <div
+              style={{
+                marginTop: 16,
+                padding: 16,
+                background: 'var(--raise)',
+                border: `1px solid ${VERDICT_COLOR[verdictLabel] || 'var(--line)'}30`,
+                borderRadius: 8,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                {verdictLabel === 'clean'
+                  ? <CheckCircle size={18} color="#22c55e" />
+                  : verdictLabel === 'malicious'
+                    ? <XCircle size={18} color="#f43f5e" />
+                    : <AlertTriangle size={18} color="#f97316" />}
                 <span
                   style={{
-                    fontSize: 12, fontWeight: 600,
-                    padding: '2px 8px', borderRadius: 3,
-                    background: 'rgba(96,130,182,0.1)',
-                    color: 'var(--text-2)',
-                    fontVariantNumeric: 'tabular-nums',
+                    fontSize: 16, fontWeight: 700, textTransform: 'capitalize',
+                    color: VERDICT_COLOR[verdictLabel] || 'var(--text-1)',
                   }}
                 >
-                  Score {result.score}/100
+                  {verdictLabel}
                 </span>
-              )}
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
-              {result.ioc_value && (
-                <Field label="IOC value" value={result.ioc_value} mono />
-              )}
-              {result.ioc_type && (
-                <Field label="Type" value={result.ioc_type} />
-              )}
-              {result.country && (
-                <Field label="Country" value={result.country} />
-              )}
-              {result.asn && (
-                <Field label="ASN" value={result.asn} mono />
-              )}
-              {result.last_seen && (
-                <Field label="Last seen" value={new Date(result.last_seen).toLocaleDateString()} />
-              )}
-              {result.source && (
-                <Field label="Source" value={result.source} />
-              )}
-            </div>
-
-            {result.tags && result.tags.length > 0 && (
-              <div style={{ marginTop: 12, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                {result.tags.map((tag: string) => (
+                {confidence != null && (
                   <span
-                    key={tag}
                     style={{
-                      fontSize: 11, padding: '2px 8px', borderRadius: 3,
-                      background: 'rgba(244,63,94,0.1)',
-                      border: '1px solid rgba(244,63,94,0.15)',
-                      color: '#f87171',
+                      fontSize: 12, fontWeight: 600,
+                      padding: '2px 8px', borderRadius: 3,
+                      background: 'rgba(96,130,182,0.1)',
+                      color: 'var(--text-2)',
+                      fontVariantNumeric: 'tabular-nums',
                     }}
                   >
-                    {tag}
+                    Confidence {confidence}/100
                   </span>
-                ))}
+                )}
               </div>
-            )}
 
-            {result.raw && (
-              <details style={{ marginTop: 12 }}>
-                <summary style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer', marginBottom: 6 }}>
-                  Raw response
-                </summary>
-                <pre
-                  style={{
-                    fontSize: 11, color: 'var(--text-3)',
-                    background: 'var(--void)', padding: 10, borderRadius: 4,
-                    overflow: 'auto', maxHeight: 200,
-                    fontFamily: 'JetBrains Mono,monospace',
-                  }}
-                >
-                  {JSON.stringify(result.raw, null, 2)}
-                </pre>
-              </details>
-            )}
-          </div>
-        )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+                <Field label="IOC value" value={result.value} mono />
+                <Field label="Type" value={result.type} />
+              </div>
+
+              {result.note && (
+                <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-3)' }}>{result.note}</p>
+              )}
+
+              {reasons.length > 0 && (
+                <div style={{ marginTop: 12, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {reasons.map((reason: string) => (
+                    <span
+                      key={reason}
+                      style={{
+                        fontSize: 11, padding: '2px 8px', borderRadius: 3,
+                        background: 'rgba(244,63,94,0.1)',
+                        border: '1px solid rgba(244,63,94,0.15)',
+                        color: '#f87171',
+                      }}
+                    >
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {Object.keys(sources).length > 0 && (
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {Object.entries(sources).map(([name, data]) => (
+                    <div
+                      key={name}
+                      style={{
+                        display: 'flex', alignItems: 'baseline', gap: 8,
+                        fontSize: 11, color: 'var(--text-3)',
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, textTransform: 'capitalize', color: 'var(--text-2)', minWidth: 90 }}>
+                        {name}
+                      </span>
+                      <span style={{ fontFamily: 'JetBrains Mono,monospace', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {data?.error ? `Error: ${data.error}` : JSON.stringify(data)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })()}
       </div>
 
       {/* ── Recent lookups ── */}
@@ -221,58 +221,38 @@ export default function ThreatIntel() {
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
             <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Recent intelligence
+              Recent SocBlitz Threat Intel events
             </p>
           </div>
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
                 <tr>
-                  <th>Verdict</th>
-                  <th>IOC</th>
-                  <th>Type</th>
-                  <th>Score</th>
-                  <th>Source</th>
-                  <th>Last seen</th>
+                  <th>Event ID</th>
+                  <th>Info</th>
+                  <th>Org</th>
+                  <th>Tags</th>
+                  <th>Date</th>
                 </tr>
               </thead>
               <tbody>
-                {(recentIOCs || []).map((item: any, i: number) => (
-                  <tr key={item.id || i}>
-                    <td>
-                      <span
-                        style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 4,
-                          fontSize: 11, fontWeight: 500, textTransform: 'capitalize',
-                          color: VERDICT_COLOR[item.verdict?.toLowerCase()] || 'var(--text-3)',
-                        }}
-                      >
-                        <span
-                          style={{
-                            width: 5, height: 5, borderRadius: '50%',
-                            background: VERDICT_COLOR[item.verdict?.toLowerCase()] || 'var(--text-3)',
-                          }}
-                        />
-                        {item.verdict || 'unknown'}
-                      </span>
-                    </td>
-                    <td>
-                      <span style={{ fontSize: 12, fontFamily: 'JetBrains Mono,monospace', color: '#67e8f9' }}>
-                        {item.ioc_value}
-                      </span>
-                    </td>
-                    <td style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase' }}>
-                      {item.ioc_type}
-                    </td>
-                    <td style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
-                      {item.score != null ? item.score : '—'}
-                    </td>
-                    <td style={{ fontSize: 11, color: 'var(--text-3)' }}>{item.source || '—'}</td>
-                    <td style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      {item.last_seen ? new Date(item.last_seen).toLocaleDateString() : '—'}
-                    </td>
-                  </tr>
-                ))}
+                {(recentIOCs || []).map((raw: any, i: number) => {
+                  const item = raw?.Event ?? raw ?? {}
+                  const tags: string[] = (item.Tag ?? []).map((t: any) => t?.name).filter(Boolean)
+                  return (
+                    <tr key={item.id ?? i}>
+                      <td style={{ fontSize: 12, fontFamily: 'JetBrains Mono,monospace', color: '#67e8f9' }}>
+                        {item.id ?? '—'}
+                      </td>
+                      <td style={{ fontSize: 12, color: 'var(--text-1)' }}>{item.info || '—'}</td>
+                      <td style={{ fontSize: 11, color: 'var(--text-3)' }}>{item.Orgc?.name || '—'}</td>
+                      <td style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                        {tags.length > 0 ? tags.join(', ') : '—'}
+                      </td>
+                      <td style={{ fontSize: 11, color: 'var(--text-3)' }}>{item.date || '—'}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

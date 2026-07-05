@@ -71,11 +71,8 @@ class CasePriority(str, Enum):
 class ConnectorType(str, Enum):
     WAZUH_MANAGER    = "wazuh_manager"
     WAZUH_INDEXER    = "wazuh_indexer"
-    GRAYLOG          = "graylog"
-    GRAFANA          = "grafana"
     VELOCIRAPTOR     = "velociraptor"
     SHUFFLE          = "shuffle"
-    INFLUXDB         = "influxdb"
     THEHIVE          = "thehive"
     MISP             = "misp"
     VIRUSTOTAL       = "virustotal"
@@ -103,6 +100,36 @@ class TaskStatus(str, Enum):
     RUNNING  = "running"
     SUCCESS  = "success"
     FAILED   = "failed"
+
+
+class WorkflowTrigger(str, Enum):
+    MANUAL   = "manual"
+    ALERT    = "alert"
+    SCHEDULE = "schedule"
+    WEBHOOK  = "webhook"
+
+
+class CaseTaskStatus(str, Enum):
+    TODO        = "to_do"
+    IN_PROGRESS = "in_progress"
+    DONE        = "done"
+
+
+class AssetType(str, Enum):
+    SERVER      = "server"
+    WORKSTATION = "workstation"
+    LAPTOP      = "laptop"
+    MOBILE      = "mobile"
+    NETWORK     = "network"
+    CLOUD       = "cloud"
+    OTHER       = "other"
+
+
+class AssetCompromiseStatus(str, Enum):
+    COMPROMISED  = "compromised"
+    INVESTIGATING= "investigating"
+    CLEAN        = "clean"
+    UNKNOWN      = "unknown"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +201,22 @@ class Connector(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Custom Dashboard (AI-agent-built)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CustomDashboard(Base):
+    __tablename__ = "custom_dashboards"
+
+    id:          Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    tenant_id:   Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), index=True)
+    user_id:     Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    name:        Mapped[str] = mapped_column(String(256), default="My dashboard")
+    widgets:     Mapped[list] = mapped_column(JSONB, default=list)   # [{id, generator, title, params}]
+    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Alert
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -187,10 +230,11 @@ class Alert(Base):
 
     id:          Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
     tenant_id:   Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), index=True)
-    source:      Mapped[str] = mapped_column(String(64), nullable=False)    # wazuh | graylog | etc.
+    source:      Mapped[str] = mapped_column(String(64), nullable=False)    # wazuh | misp | etc.
     source_id:   Mapped[str | None] = mapped_column(String(256))           # original alert ID
     rule_id:     Mapped[str | None] = mapped_column(String(64))
     rule_name:   Mapped[str | None] = mapped_column(String(256))
+    level:       Mapped[int | None] = mapped_column(Integer)               # Wazuh rule level
     description: Mapped[str | None] = mapped_column(Text)
     severity:    Mapped[AlertSeverity] = mapped_column(SAEnum(AlertSeverity), default=AlertSeverity.MEDIUM, index=True)
     status:      Mapped[AlertStatus]  = mapped_column(SAEnum(AlertStatus),  default=AlertStatus.NEW,     index=True)
@@ -250,6 +294,10 @@ class Case(Base):
     alerts:           Mapped[list["Alert"]] = relationship("Alert", back_populates="case")
     comments:         Mapped[list["CaseComment"]] = relationship("CaseComment", back_populates="case")
     observables:      Mapped[list["Observable"]] = relationship("Observable", back_populates="case")
+    tasks:            Mapped[list["CaseTask"]] = relationship("CaseTask", back_populates="case")
+    assets:           Mapped[list["CaseAsset"]] = relationship("CaseAsset", back_populates="case")
+    evidence:         Mapped[list["CaseEvidence"]] = relationship("CaseEvidence", back_populates="case")
+    notes:            Mapped[list["CaseNote"]] = relationship("CaseNote", back_populates="case")
 
 
 class CaseComment(Base):
@@ -277,9 +325,82 @@ class Observable(Base):
     is_ioc:      Mapped[bool] = mapped_column(Boolean, default=False)
     tlp:         Mapped[str] = mapped_column(String(16), default="AMBER")
     enrichment:  Mapped[dict | None] = mapped_column(JSONB)
+    asset_id:    Mapped[str | None] = mapped_column(ForeignKey("case_assets.id", ondelete="SET NULL"), index=True)
     created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     case: Mapped["Case"] = relationship("Case", back_populates="observables")
+
+
+class CaseTask(Base):
+    """Assignable checklist item on a case (IRIS-style task board)."""
+    __tablename__ = "case_tasks"
+
+    id:          Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    case_id:     Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    title:       Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    status:      Mapped[CaseTaskStatus] = mapped_column(SAEnum(CaseTaskStatus), default=CaseTaskStatus.TODO, index=True)
+    assigned_to: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_by:  Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    due_date:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    case: Mapped["Case"] = relationship("Case", back_populates="tasks")
+
+
+class CaseAsset(Base):
+    """Compromised / analyzed host or system tracked on a case (IRIS-style asset)."""
+    __tablename__ = "case_assets"
+
+    id:                Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    case_id:           Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    name:              Mapped[str] = mapped_column(String(255), nullable=False)
+    asset_type:        Mapped[AssetType] = mapped_column(SAEnum(AssetType), default=AssetType.OTHER)
+    ip_address:        Mapped[str | None] = mapped_column(String(64))
+    description:       Mapped[str | None] = mapped_column(Text)
+    compromise_status: Mapped[AssetCompromiseStatus] = mapped_column(SAEnum(AssetCompromiseStatus), default=AssetCompromiseStatus.UNKNOWN, index=True)
+    created_by:        Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_at:        Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:        Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    case:       Mapped["Case"] = relationship("Case", back_populates="assets")
+    observables:Mapped[list["Observable"]] = relationship("Observable")
+
+
+class CaseEvidence(Base):
+    """Exhibit / evidence item tracked on a case (IRIS-style evidence register)."""
+    __tablename__ = "case_evidence"
+
+    id:            Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    case_id:       Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    filename:      Mapped[str] = mapped_column(String(512), nullable=False)
+    description:   Mapped[str | None] = mapped_column(Text)
+    hash_md5:      Mapped[str | None] = mapped_column(String(32))
+    hash_sha1:     Mapped[str | None] = mapped_column(String(40))
+    hash_sha256:   Mapped[str | None] = mapped_column(String(64))
+    size_bytes:    Mapped[int | None] = mapped_column(Integer)
+    custody_notes: Mapped[str | None] = mapped_column(Text)
+    acquired_by:   Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    acquired_at:   Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at:    Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    case: Mapped["Case"] = relationship("Case", back_populates="evidence")
+
+
+class CaseNote(Base):
+    """Structured, titled investigation note (IRIS-style note group)."""
+    __tablename__ = "case_notes"
+
+    id:         Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    case_id:    Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), index=True)
+    title:      Mapped[str] = mapped_column(String(255), nullable=False)
+    content:    Mapped[str] = mapped_column(Text, nullable=False)
+    author_id:  Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    case: Mapped["Case"] = relationship("Case", back_populates="notes")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -333,6 +454,51 @@ class ScheduledTask(Base):
     last_error:  Mapped[str | None] = mapped_column(Text)
     run_count:   Mapped[int] = mapped_column(Integer, default=0)
     created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOAR Workflows
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Workflow(Base):
+    """A SOAR automation graph: a set of trigger/action/logic nodes wired by edges."""
+    __tablename__ = "workflows"
+
+    id:             Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    tenant_id:      Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name:           Mapped[str] = mapped_column(String(256), nullable=False)
+    description:    Mapped[str | None] = mapped_column(Text)
+    trigger_type:   Mapped[WorkflowTrigger] = mapped_column(SAEnum(WorkflowTrigger), default=WorkflowTrigger.MANUAL)
+    trigger_config: Mapped[dict | None] = mapped_column(JSONB)             # e.g. {"severity": "critical"}
+    nodes:          Mapped[list] = mapped_column(JSONB, default=list)     # React Flow node objects
+    edges:          Mapped[list] = mapped_column(JSONB, default=list)     # React Flow edge objects
+    is_active:      Mapped[bool] = mapped_column(Boolean, default=True)
+    run_count:      Mapped[int] = mapped_column(Integer, default=0)
+    last_run_at:    Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by:     Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_at:     Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:     Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    runs: Mapped[list["WorkflowRun"]] = relationship("WorkflowRun", back_populates="workflow")
+
+
+class WorkflowRun(Base):
+    """One execution of a Workflow, with a per-node result log."""
+    __tablename__ = "workflow_runs"
+    __table_args__ = (
+        Index("ix_workflow_runs_workflow_started", "workflow_id", "started_at"),
+    )
+
+    id:           Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    workflow_id:  Mapped[str] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"), index=True)
+    status:       Mapped[TaskStatus] = mapped_column(SAEnum(TaskStatus), default=TaskStatus.PENDING, index=True)
+    trigger_data: Mapped[dict | None] = mapped_column(JSONB)
+    node_results: Mapped[list | None] = mapped_column(JSONB)              # ordered per-node execution log
+    error:        Mapped[str | None] = mapped_column(Text)
+    started_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="runs")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

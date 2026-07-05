@@ -5,11 +5,6 @@ name: socblitz
 #
 # VERSION LOCK (verified compatible):
 #   Wazuh       4.14.5  (manager + indexer — same version mandatory)
-#   Graylog     6.1     (native arm64 + amd64)
-#   OpenSearch  2.19.0  (for Graylog — DO NOT upgrade to 3.x, it breaks Graylog)
-#   MongoDB     7.0     (for Graylog — native arm64 + amd64)
-#   Grafana     11.3.0  (native arm64 + amd64)
-#   InfluxDB    2.7     (native arm64 + amd64)
 #
 # ARM64 NOTE:
 #   Wazuh manager + indexer images are amd64-only (no native arm64 build exists).
@@ -100,134 +95,6 @@ services:
       timeout: 10s
       retries: 15
       start_period: 120s    # longer on ARM64 due to JVM emulation startup time
-
-  # ╔══════════════════════════════════════════════════════════════════════════╗
-  # ║  GRAYLOG 6.1  ·  MongoDB 7.0  ·  OpenSearch 2.19.0                     ║
-  # ║  All three have native arm64 + amd64 images — no emulation needed       ║
-  # ║                                                                          ║
-  # ║  Graylog 6.1 compatibility:                                              ║
-  # ║    MongoDB:    6.0 – 7.0  ✅                                             ║
-  # ║    OpenSearch: 2.x max    ✅  (3.x+ breaks Graylog — do not upgrade)    ║
-  # ╚══════════════════════════════════════════════════════════════════════════╝
-
-  graylog-mongo:
-    image: mongo:7.0               # native arm64 + amd64
-    container_name: socblitz-graylog-mongo
-    restart: unless-stopped
-    volumes:
-      - graylog-mongo-data:/data/db
-    networks: [socblitz-net]
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
-      interval: 20s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  graylog-opensearch:
-    image: opensearchproject/opensearch:2.19.0   # native arm64 + amd64
-    container_name: socblitz-graylog-opensearch
-    restart: unless-stopped
-    environment:
-      - cluster.name=graylog-cluster
-      - node.name=graylog-opensearch
-      - discovery.type=single-node
-      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
-      - DISABLE_INSTALL_DEMO_CONFIG=true
-      - DISABLE_SECURITY_PLUGIN=true          # internal network only
-      - bootstrap.memory_lock=true
-      - action.auto_create_index=false
-    ulimits:
-      memlock: { soft: -1, hard: -1 }
-      nofile:  { soft: 65536, hard: 65536 }
-    volumes:
-      - graylog-opensearch-data:/usr/share/opensearch/data
-    networks: [socblitz-net]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -q 'green\\|yellow'"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
-
-  graylog:
-    image: graylog/graylog:6.1     # native arm64 + amd64
-    container_name: socblitz-graylog
-    restart: unless-stopped
-    # wait-for-it ensures OpenSearch is ready before Graylog starts
-    entrypoint: /usr/bin/tini -- wait-for-it graylog-opensearch:9200 -- /docker-entrypoint.sh
-    environment:
-      - GRAYLOG_NODE_ID_FILE=/usr/share/graylog/data/config/node-id
-      - GRAYLOG_HTTP_BIND_ADDRESS=0.0.0.0:9000
-      - GRAYLOG_MONGODB_URI=mongodb://graylog-mongo:27017/graylog
-      - GRAYLOG_ELASTICSEARCH_HOSTS=http://graylog-opensearch:9200
-      - GRAYLOG_PASSWORD_SECRET=${GRAYLOG_PASSWORD_SECRET:-yourmustchangethispasswordsecret}
-      # SHA2 of password. Default = "admin". Generate: echo -n "pass" | sha256sum
-      - GRAYLOG_ROOT_PASSWORD_SHA2=${GRAYLOG_ROOT_PASSWORD_SHA2:-8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918}
-      - GRAYLOG_HTTP_EXTERNAL_URI=http://localhost:9000/
-    ports:
-      - "9000:9000"           # Graylog web UI + REST API
-      - "5044:5044"           # Beats input
-      - "5140:5140/udp"       # Syslog UDP
-      - "5140:5140"           # Syslog TCP
-      - "12201:12201/udp"     # GELF UDP
-      - "12201:12201"         # GELF TCP
-    volumes:
-      - graylog-data:/usr/share/graylog/data
-    networks: [socblitz-net]
-    depends_on:
-      graylog-mongo:
-        condition: service_healthy
-      graylog-opensearch:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/lbstatus | grep -q ALIVE"]
-      interval: 30s
-      timeout: 15s
-      retries: 10
-      start_period: 120s
-
-  # ╔══════════════════════════════════════════════════════════════════════════╗
-  # ║  GRAFANA 11.3.0  ·  InfluxDB 2.7                                        ║
-  # ║  Both native arm64 + amd64                                               ║
-  # ╚══════════════════════════════════════════════════════════════════════════╝
-
-  grafana:
-    image: grafana/grafana:11.3.0  # native arm64 + amd64
-    container_name: socblitz-grafana
-    restart: unless-stopped
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-SocBlitz@Grafana1}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana-data:/var/lib/grafana
-    networks: [socblitz-net]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health"]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-
-  influxdb:
-    image: influxdb:2.7            # native arm64 + amd64
-    container_name: socblitz-influxdb
-    restart: unless-stopped
-    environment:
-      - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USER:-admin}
-      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-SocBlitz@Influx1}
-      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-socblitz}
-      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-socblitz}
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-socblitz-influx-token-change-me}
-    ports:
-      - "8086:8086"
-    volumes:
-      - influxdb-data:/var/lib/influxdb2
-    networks: [socblitz-net]
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  SOCBLITZ APPLICATION                                                    ║
@@ -402,6 +269,32 @@ services:
       start_period: 300s   # MISP first-boot DB init takes 3-5 minutes
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  OLLAMA  ·  Local LLM for the agentic dashboard (no cloud dependency)   ║
+  # ║  Default model llama3.2:1b (~1.3 GB) — small enough for CPU inference.  ║
+  # ║  Change via OLLAMA_MODEL in .env (also update LOCAL_LLM_MODEL to match).║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  ollama:
+    image: ollama/ollama:latest    # native arm64 + amd64
+    container_name: socblitz-ollama
+    restart: unless-stopped
+    # Start the server, then pull the model once (no-op when already cached)
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5; ollama pull ${OLLAMA_MODEL:-llama3.2:1b}; wait"]
+    environment:
+      - OLLAMA_KEEP_ALIVE=30m
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  VELOCIRAPTOR  ·  DFIR endpoint forensics & artifact collection         ║
   # ╚══════════════════════════════════════════════════════════════════════════╝
 
@@ -441,16 +334,12 @@ volumes:
   wazuh-agentless:
   wazuh-wodles:
   wazuh-indexer-data:
-  graylog-mongo-data:
-  graylog-opensearch-data:
-  graylog-data:
-  grafana-data:
-  influxdb-data:
   postgres-data:
   redis-data:
   minio-data:
   misp-db-data:
   misp-data:
+  ollama-data:
   velociraptor-data:
 
 networks:

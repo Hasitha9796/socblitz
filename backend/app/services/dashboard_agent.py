@@ -1,0 +1,649 @@
+"""
+SocBlitz dashboard agent — heuristic (no external LLM required).
+
+Analyzes live Wazuh events straight from the indexer to surface flooding
+signal and quiet-but-risky signal, and assembles prompt-driven custom
+dashboards from a small library of data generators. Each generator is a
+self-contained (key -> widget) function; a keyword-based prompt parser
+picks which ones to run. The registry/parser split is deliberately the
+same shape an LLM function-calling loop would use, so swapping in real
+model reasoning later only touches parse_prompt_to_generators().
+"""
+from __future__ import annotations
+from loguru import logger
+
+NOISE_LEVEL_THRESHOLD = 7   # flooding + below this level = safe-to-tune candidate
+QUIET_MAX_COUNT = 3         # fires this few times or fewer in the window = "quiet"
+QUIET_MIN_LEVEL = 8         # ...but still meaningful severity = "quiet but risky"
+
+LEVEL_BANDS = [
+    (12, "#f43f5e", "critical"),
+    (8,  "#f97316", "high"),
+    (4,  "#f59e0b", "medium"),
+    (0,  "#67e8f9", "low"),
+]
+ACCENT = "#60a5fa"
+
+
+def _level_band(level: int) -> tuple[str, str]:
+    for min_level, color, label in LEVEL_BANDS:
+        if level >= min_level:
+            return color, label
+    return "#64748b", "info"
+
+
+async def _rule_terms_agg(hours: int, size: int = 50) -> list[dict]:
+    """Aggregate wazuh-alerts-* by rule.id: count + description + level."""
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {
+            "by_rule": {
+                "terms": {"field": "rule.id", "size": size, "order": {"_count": "desc"}},
+                "aggs": {
+                    "description": {"terms": {"field": "rule.description", "size": 1}},
+                    "level": {"max": {"field": "rule.level"}},
+                },
+            }
+        },
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("by_rule", {}).get("buckets", [])
+    out = []
+    for b in buckets:
+        desc_buckets = b.get("description", {}).get("buckets", [])
+        out.append({
+            "rule_id": b["key"],
+            "count": b["doc_count"],
+            "description": desc_buckets[0]["key"] if desc_buckets else str(b["key"]),
+            "level": int(b.get("level", {}).get("value") or 0),
+        })
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generators — each returns a self-contained widget: {type, title, data, config}
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def gen_flooding_rules(hours: int = 24, size: int = 10, **_) -> dict:
+    """Top rules by volume — the noisiest signal generators right now."""
+    rules = await _rule_terms_agg(hours, size=max(size, 50))
+    rules.sort(key=lambda r: r["count"], reverse=True)
+    top = rules[:size]
+    return {
+        "type": "bar",
+        "title": f"Most flooding events ({hours}h)",
+        "data": [{"name": r["description"][:44], "value": r["count"]} for r in top],
+        "config": {"color": ACCENT, "valueLabel": "events"},
+    }
+
+
+async def gen_noise_candidates(hours: int = 24, **_) -> dict:
+    """High volume + low severity — not risky, safe to silence/tune down."""
+    rules = await _rule_terms_agg(hours, size=200)
+    candidates = [r for r in rules if r["level"] < NOISE_LEVEL_THRESHOLD]
+    candidates.sort(key=lambda r: r["count"], reverse=True)
+    top = candidates[:10]
+    return {
+        "type": "table",
+        "title": f"Noise candidates — not risky, high volume ({hours}h)",
+        "columns": ["Rule", "Level", "Count", "Recommendation"],
+        "data": [
+            {"Rule": r["description"], "Level": r["level"], "Count": r["count"],
+             "Recommendation": "Not risky — safe to silence or tune"}
+            for r in top
+        ],
+        "config": {},
+    }
+
+
+async def gen_quiet_risky(hours: int = 24, **_) -> dict:
+    """Low volume but meaningful severity — the signal that gets buried under the flood."""
+    rules = await _rule_terms_agg(hours, size=200)
+    candidates = [r for r in rules if r["level"] >= QUIET_MIN_LEVEL and r["count"] <= QUIET_MAX_COUNT]
+    candidates.sort(key=lambda r: -r["level"])
+    top = candidates[:10]
+    return {
+        "type": "table",
+        "title": f"Quiet but risky — rare, high severity, easy to miss ({hours}h)",
+        "columns": ["Rule", "Level", "Count", "Recommendation"],
+        "data": [
+            {"Rule": r["description"], "Level": r["level"], "Count": r["count"],
+             "Recommendation": "Low volume — verify it isn't being missed"}
+            for r in top
+        ],
+        "config": {},
+    }
+
+
+async def gen_event_level_breakdown(hours: int = 24, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"levels": {"histogram": {"field": "rule.level", "interval": 1, "min_doc_count": 1}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("levels", {}).get("buckets", [])
+    bands = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for b in buckets:
+        _, label = _level_band(int(b["key"]))
+        bands[label] = bands.get(label, 0) + b["doc_count"]
+    colors = {"critical": "#f43f5e", "high": "#f97316", "medium": "#f59e0b", "low": "#67e8f9"}
+    return {
+        "type": "pie",
+        "title": f"Event volume by severity band ({hours}h)",
+        "data": [{"name": k.capitalize(), "value": v, "color": colors[k]} for k, v in bands.items() if v],
+        "config": {},
+    }
+
+
+async def gen_top_source_ips(hours: int = 24, size: int = 10, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"ips": {"terms": {"field": "data.srcip", "size": size, "order": {"_count": "desc"}}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("ips", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": f"Top source IPs ({hours}h)",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#f97316", "valueLabel": "events"},
+    }
+
+
+async def gen_mitre_tactics(hours: int = 24, size: int = 10, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"tactics": {"terms": {"field": "rule.mitre.tactic", "size": size, "order": {"_count": "desc"}}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("tactics", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": f"Top MITRE ATT&CK tactics ({hours}h)",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#c084fc", "valueLabel": "events"},
+    }
+
+
+async def gen_top_agents(hours: int = 24, size: int = 10, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"agents": {"terms": {"field": "agent.name", "size": size, "order": {"_count": "desc"}}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("agents", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": f"Event volume by agent ({hours}h)",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#4ade80", "valueLabel": "events"},
+    }
+
+
+async def gen_top_severe_rules(hours: int = 24, size: int = 10, **_) -> dict:
+    """Top rule descriptions among HIGH/CRITICAL severity events (level >= 8)."""
+    rules = await _rule_terms_agg(hours, size=200)
+    severe = [r for r in rules if r["level"] >= 8]
+    severe.sort(key=lambda r: r["count"], reverse=True)
+    top = severe[:size]
+    return {
+        "type": "bar",
+        "title": f"Top high-severity rules ({hours}h)",
+        "data": [{"name": r["description"][:44], "value": r["count"]} for r in top],
+        "config": {"color": "#f43f5e", "valueLabel": "events"},
+    }
+
+
+async def gen_events_over_time(hours: int = 24, **_) -> dict:
+    """Event volume timeline — spot spikes and quiet periods at a glance."""
+    from app.connectors.registry import WazuhIndexerClient
+
+    interval = "1h" if hours <= 24 else "6h"
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"timeline": {"date_histogram": {"field": "@timestamp", "fixed_interval": interval, "min_doc_count": 0}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("timeline", {}).get("buckets", [])
+    return {
+        "type": "line",
+        "title": f"Event volume over time ({hours}h)",
+        "data": [{"name": b["key_as_string"][11:16] if hours <= 24 else b["key_as_string"][5:13].replace("T", " "),
+                  "value": b["doc_count"]} for b in buckets],
+        "config": {"color": ACCENT, "valueLabel": "events"},
+    }
+
+
+async def gen_mitre_techniques(hours: int = 24, size: int = 10, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"techniques": {"terms": {"field": "rule.mitre.technique", "size": size, "order": {"_count": "desc"}}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("techniques", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": f"Top MITRE ATT&CK techniques ({hours}h)",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#a78bfa", "valueLabel": "events"},
+    }
+
+
+async def gen_top_users(hours: int = 24, size: int = 10, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"users": {"terms": {"field": "data.dstuser", "size": size, "order": {"_count": "desc"}}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": f"Top user accounts in events ({hours}h)",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#4ade80", "valueLabel": "events"},
+    }
+
+
+async def gen_auth_failures(hours: int = 24, **_) -> dict:
+    """Authentication failure timeline — brute-force / credential-stuffing signal."""
+    from app.connectors.registry import WazuhIndexerClient
+
+    interval = "1h" if hours <= 24 else "6h"
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"bool": {"must": [
+            {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+            {"terms": {"rule.groups": ["authentication_failed", "authentication_failures"]}},
+        ]}},
+        "aggs": {"timeline": {"date_histogram": {"field": "@timestamp", "fixed_interval": interval, "min_doc_count": 0}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("timeline", {}).get("buckets", [])
+    return {
+        "type": "line",
+        "title": f"Authentication failures over time ({hours}h)",
+        "data": [{"name": b["key_as_string"][11:16] if hours <= 24 else b["key_as_string"][5:13].replace("T", " "),
+                  "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#f43f5e", "valueLabel": "failures"},
+    }
+
+
+async def gen_top_rule_groups(hours: int = 24, size: int = 10, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"groups": {"terms": {"field": "rule.groups", "size": size, "order": {"_count": "desc"}}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("groups", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": f"Top event categories ({hours}h)",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#67e8f9", "valueLabel": "events"},
+    }
+
+
+async def gen_total_events(hours: int = 24, **_) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {"size": 0, "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}}, "track_total_hits": True}
+    result = await client.search("wazuh-alerts-*", body)
+    total = result.get("hits", {}).get("total", {}).get("value", 0)
+    return {"type": "stat", "title": f"Total events ({hours}h)", "data": total, "config": {}}
+
+
+async def gen_alert_severity_breakdown(db=None, **_) -> dict:
+    """Curated (triaged) alert severity — from the Postgres alerts table, not raw events."""
+    from sqlalchemy import select, func
+    from app.models import Alert, AlertSeverity
+
+    colors = {"critical": "#f43f5e", "high": "#f97316", "medium": "#f59e0b", "low": "#67e8f9", "info": "#64748b"}
+    data = []
+    for sev in AlertSeverity:
+        count = (await db.execute(
+            select(func.count()).select_from(Alert).where(Alert.severity == sev)
+        )).scalar_one()
+        if count:
+            data.append({"name": sev.value.capitalize(), "value": count, "color": colors[sev.value]})
+    return {"type": "pie", "title": "Triaged alert severity", "data": data, "config": {}}
+
+
+async def gen_agent_status(db=None, **_) -> dict:
+    from sqlalchemy import select, func
+    from app.models import Agent, AgentStatus
+
+    colors = {"active": "#22c55e", "disconnected": "#f43f5e", "pending": "#f59e0b", "never_connected": "#64748b"}
+    data = []
+    for st in AgentStatus:
+        count = (await db.execute(
+            select(func.count()).select_from(Agent).where(Agent.status == st)
+        )).scalar_one()
+        if count:
+            data.append({"name": st.value.replace("_", " ").capitalize(), "value": count, "color": colors[st.value]})
+    return {"type": "pie", "title": "Agent status", "data": data, "config": {}}
+
+
+GENERATORS = {
+    "flooding_rules":           gen_flooding_rules,
+    "top_severe_rules":         gen_top_severe_rules,
+    "noise_candidates":         gen_noise_candidates,
+    "quiet_risky":              gen_quiet_risky,
+    "event_level_breakdown":    gen_event_level_breakdown,
+    "top_source_ips":           gen_top_source_ips,
+    "mitre_tactics":            gen_mitre_tactics,
+    "mitre_techniques":         gen_mitre_techniques,
+    "top_agents":               gen_top_agents,
+    "events_over_time":         gen_events_over_time,
+    "top_users":                gen_top_users,
+    "auth_failures":            gen_auth_failures,
+    "top_rule_groups":          gen_top_rule_groups,
+    "total_events":             gen_total_events,
+    "alert_severity_breakdown": gen_alert_severity_breakdown,
+    "agent_status":             gen_agent_status,
+}
+
+GENERATOR_LABELS = {
+    "flooding_rules": "Most flooding events",
+    "top_severe_rules": "Top high-severity rules",
+    "noise_candidates": "Noise reduction candidates",
+    "quiet_risky": "Quiet but risky events",
+    "event_level_breakdown": "Event severity breakdown",
+    "top_source_ips": "Top source IPs",
+    "mitre_tactics": "Top MITRE tactics",
+    "mitre_techniques": "Top MITRE techniques",
+    "top_agents": "Event volume by agent",
+    "events_over_time": "Event volume over time",
+    "top_users": "Top user accounts",
+    "auth_failures": "Authentication failures over time",
+    "top_rule_groups": "Top event categories",
+    "total_events": "Total events",
+    "alert_severity_breakdown": "Triaged alert severity",
+    "agent_status": "Agent status",
+}
+
+INTENT_KEYWORDS = {
+    "flooding_rules":           ["flood", "flooding", "noisy", "noise", "top rule", "most common", "spam"],
+    "top_severe_rules":         ["high level", "high-level", "severe", "critical rule", "dangerous", "rule description", "rule.description", "worst rules", "top threats"],
+    "noise_candidates":         ["silence", "suppress", "tune", "safe to ignore", "not risky", "false positive"],
+    "quiet_risky":              ["quiet", "rare", "missed", "buried", "low volume", "hidden", "sneaky", "silent risk", "silent but"],
+    "event_level_breakdown":    ["severity", "level breakdown", "by severity", "by level"],
+    "top_source_ips":           ["source ip", "attacker", "top ip", "ip address", "srcip", "remote address"],
+    "mitre_tactics":            ["tactic", "mitre", "att&ck"],
+    "mitre_techniques":         ["technique"],
+    "top_agents":               ["by agent", "per agent", "endpoint", "which host", "which agent", "by host", "per host", "top agent"],
+    "events_over_time":         ["over time", "timeline", "trend", "spike", "history", "hourly", "time series", "when"],
+    "top_users":                ["user", "account", "username", "who logged"],
+    "auth_failures":            ["auth", "login", "logon", "brute", "failed password", "ssh fail", "credential", "password guess"],
+    "top_rule_groups":          ["group", "category", "categories", "kind of event", "type of event", "types of event"],
+    "total_events":             ["total", "how many events", "count of events", "event count"],
+    "alert_severity_breakdown": ["triaged", "alert severity", "escalated alerts"],
+    "agent_status":             ["agent status", "online agents", "offline agents", "agent health"],
+}
+
+# Generic fallback when nothing matches — a broad events overview, NOT the
+# flooding view (that one has its own always-on insights panel).
+DEFAULT_OVERVIEW = ["events_over_time", "event_level_breakdown", "top_agents", "top_rule_groups"]
+
+_PIE_PALETTE = ["#60a5fa", "#f97316", "#22c55e", "#f43f5e", "#fbbf24", "#c084fc", "#67e8f9", "#94a3b8", "#4ade80", "#a78bfa"]
+
+
+GENERATOR_DESCRIPTIONS = {
+    "flooding_rules":           "Top rules by event volume — the noisiest signal generators (bar)",
+    "top_severe_rules":         "Top rule descriptions among HIGH/CRITICAL severity events, level >= 8 (bar)",
+    "noise_candidates":         "High-volume, low-severity rules that are safe to tune out (table)",
+    "quiet_risky":              "Rare but high-severity rules that risk being missed (table)",
+    "event_level_breakdown":    "Event volume split by severity band (pie)",
+    "top_source_ips":           "Source IPs generating the most events (bar)",
+    "mitre_tactics":            "Top MITRE ATT&CK tactics seen in events (bar)",
+    "mitre_techniques":         "Top MITRE ATT&CK techniques seen in events (bar)",
+    "top_agents":               "Event volume per agent/endpoint (bar)",
+    "events_over_time":         "Event volume timeline to spot spikes (line)",
+    "top_users":                "User accounts appearing most in events (bar)",
+    "auth_failures":            "Authentication failure timeline — brute-force signal (line)",
+    "top_rule_groups":          "Event volume by rule group/category (bar)",
+    "total_events":             "Single total event count (stat)",
+    "alert_severity_breakdown": "Triaged SocBlitz alert counts by severity (pie)",
+    "agent_status":             "Agent online/offline status counts (pie)",
+}
+
+
+async def llm_parse_prompt(prompt: str) -> dict | None:
+    """Ask a configured LLM to pick generators + params for the prompt.
+
+    Uses whichever is configured: OPENAI_API_KEY (api.openai.com) or
+    LOCAL_LLM_URL (any OpenAI-compatible server, e.g. Ollama). Returns
+    {"generators": [...], "size": int|None, "chart": str|None} or None if no
+    LLM is configured / the call fails — callers then fall back to keywords.
+    """
+    import json as _json
+    import httpx
+
+    from app.core.config import settings
+
+    if settings.LOCAL_LLM_URL:
+        base_url = settings.LOCAL_LLM_URL.rstrip("/")
+        model = settings.LOCAL_LLM_MODEL or "llama3"
+        headers = {}
+    elif settings.OPENAI_API_KEY:
+        base_url = "https://api.openai.com/v1"
+        model = settings.OPENAI_MODEL
+        headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
+    else:
+        return None
+
+    catalog = "\n".join(f"- {k}: {v}" for k, v in GENERATOR_DESCRIPTIONS.items())
+    system = (
+        "You select dashboard widgets for a SOC analyst. Given the user's request, "
+        "pick 1-4 generator keys from this catalog that best answer it:\n"
+        f"{catalog}\n\n"
+        "Respond with ONLY a JSON object, no prose. The generator keys MUST be "
+        "copied exactly from the catalog above — never invent new keys:\n"
+        '{"generators": ["key", ...], "size": <int top-N or null>, '
+        '"chart": <"pie"|"bar"|"table"|"line"|null if the user asked for a specific chart shape>}'
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as c:
+            r = await c.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"].strip()
+            # Small models sometimes wrap the JSON in prose/fences — dig it out.
+            if not content.startswith("{"):
+                import re
+                m = re.search(r"\{.*\}", content, re.DOTALL)
+                if not m:
+                    return None
+                content = m.group(0)
+            parsed = _json.loads(content)
+            generators = [g for g in parsed.get("generators", []) if g in GENERATORS]
+            if not generators:
+                return None
+            return {
+                "generators": generators,
+                "size": parsed.get("size"),
+                "chart": parsed.get("chart") if parsed.get("chart") in ("pie", "bar", "table", "line") else None,
+            }
+    except Exception as e:
+        logger.warning(f"LLM prompt parsing failed, falling back to keywords: {e}")
+        return None
+
+
+def parse_prompt_to_generators(prompt: str) -> list[str]:
+    p = (prompt or "").lower()
+    matched = [key for key, kws in INTENT_KEYWORDS.items() if any(kw in p for kw in kws)]
+    seen = set()
+    matched = [k for k in matched if not (k in seen or seen.add(k))]
+    return matched or list(DEFAULT_OVERVIEW)
+
+
+def parse_prompt_params(prompt: str) -> dict:
+    """Extract widget params from the prompt — currently 'top N' sizes."""
+    import re
+    params = {}
+    m = re.search(r"\btop\s+(\d{1,3})\b", (prompt or "").lower())
+    if m:
+        params["size"] = max(3, min(25, int(m.group(1))))
+    return params
+
+
+def parse_chart_hint(prompt: str) -> str | None:
+    """Did the user ask for a specific visualization shape?"""
+    p = (prompt or "").lower()
+    for hint in ("pie", "donut", "bar", "table", "line", "chart type"):
+        if hint in p:
+            return {"donut": "pie"}.get(hint, hint)
+    return None
+
+
+def apply_chart_hint(widget: dict, hint: str | None) -> dict:
+    """Re-shape a widget to the requested chart type where the data allows it.
+    bar <-> pie <-> table all share the name/value shape; line stays line."""
+    if not hint or widget.get("type") == hint or widget.get("type") in ("stat", "line"):
+        return widget
+
+    data = widget.get("data") or []
+    if widget["type"] == "table":
+        return widget  # table columns are generator-specific; don't guess a chart from them
+
+    if hint == "pie":
+        widget["type"] = "pie"
+        widget["data"] = [
+            {**d, "color": d.get("color") or _PIE_PALETTE[i % len(_PIE_PALETTE)]}
+            for i, d in enumerate(data)
+        ]
+    elif hint == "bar":
+        widget["type"] = "bar"
+        widget.setdefault("config", {}).setdefault("color", ACCENT)
+    elif hint == "table":
+        widget["type"] = "table"
+        widget["columns"] = ["Name", "Count"]
+        widget["data"] = [{"Name": d.get("name"), "Count": d.get("value")} for d in data]
+    return widget
+
+
+async def run_generator(key: str, db=None, hours: int = 24, params: dict | None = None) -> dict:
+    fn = GENERATORS.get(key)
+    if not fn:
+        raise ValueError(f"Unknown generator: {key}")
+    return await fn(hours=hours, db=db, **(params or {}))
+
+
+async def analyze_flooding_and_noise(db, hours: int = 24) -> dict:
+    """The core ask: what's flooding, and what quiet-but-risky signal is it burying."""
+    widgets = [
+        await gen_flooding_rules(hours=hours, size=10),
+        await gen_noise_candidates(hours=hours),
+        await gen_quiet_risky(hours=hours),
+    ]
+    return {"widgets": widgets, "hours": hours}
+
+
+async def build_dashboard(prompt: str, db, hours: int = 24) -> dict:
+    # Agentic path first: a configured LLM picks generators/params from the
+    # catalog. Falls back to the keyword heuristic when no LLM is set up.
+    mode = "keywords"
+    llm = await llm_parse_prompt(prompt)
+    if llm:
+        mode = "llm"
+        keys = llm["generators"]
+        params = {}
+        if llm.get("size"):
+            params["size"] = max(3, min(25, int(llm["size"])))
+        hint = llm.get("chart")
+    else:
+        keys = parse_prompt_to_generators(prompt)
+        params = parse_prompt_params(prompt)
+        hint = parse_chart_hint(prompt)
+    if hint:
+        params["chart"] = hint
+
+    widgets = []
+    for key in keys:
+        try:
+            w = await run_generator(key, db=db, hours=hours, params={k: v for k, v in params.items() if k != "chart"})
+        except Exception as e:
+            logger.warning(f"dashboard generator {key} failed: {e}")
+            continue
+        w = apply_chart_hint(w, hint)
+        w["id"] = key
+        w["generator"] = key
+        w["params"] = params
+        widgets.append(w)
+
+    if widgets:
+        summary = f"Built {len(widgets)} widget(s) from your prompt: " + ", ".join(w["title"] for w in widgets)
+    else:
+        summary = "Couldn't build any widgets yet — there may not be enough event data in this window."
+    return {"prompt": prompt, "matched": keys, "mode": mode, "widgets": widgets, "summary": summary}
+
+
+async def resolve_widgets(recipes: list[dict], db, hours: int = 24) -> list[dict]:
+    """Re-run stored generator recipes so a saved dashboard always shows fresh data."""
+    resolved = []
+    for r in recipes:
+        key = r.get("generator")
+        params = r.get("params") or {}
+        try:
+            w = await run_generator(
+                key, db=db, hours=params.get("hours", hours),
+                params={k: v for k, v in params.items() if k != "chart"},
+            )
+        except Exception as e:
+            logger.warning(f"resolve widget {key} failed: {e}")
+            continue
+        w = apply_chart_hint(w, params.get("chart"))
+        w["id"] = r.get("id") or key
+        w["generator"] = key
+        w["params"] = params
+        if r.get("title"):
+            w["title"] = r["title"]
+        resolved.append(w)
+    return resolved

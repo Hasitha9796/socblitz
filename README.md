@@ -9,7 +9,7 @@ Inspired by SOCFortress CoPilot — designed to be more powerful.
 
 SocBlitz is a single-pane-of-glass SOC platform that unifies:
 
-- **Alerts** — ingest from Wazuh, Graylog, or webhook; auto-enriched with threat intel
+- **Alerts** — ingest from Wazuh or webhook; auto-enriched with threat intel
 - **Cases** — full incident lifecycle with timeline, observables, comments, TLP classification
 - **Agents** — Wazuh + Velociraptor agent inventory, vulnerabilities, SCA
 - **Threat Intelligence** — parallel VirusTotal + AbuseIPDB + MISP + OTX lookups
@@ -68,7 +68,7 @@ docker logs socblitz-backend 2>&1 | grep "Admin password"
          ↕ REST APIs
 ┌────────────────────────────────────────────────────────┐
 │               Your security stack                       │
-│  Wazuh  ·  Graylog  ·  Velociraptor  ·  Grafana       │
+│  Wazuh  ·  Velociraptor                                │
 │  MISP   ·  TheHive  ·  Shuffle  ·  CrowdStrike        │
 └────────────────────────────────────────────────────────┘
 ```
@@ -83,8 +83,6 @@ Configure each connector URL + credentials in `.env`. SocBlitz seeds them on fir
 |-----------|---------|
 | Wazuh Manager | Agent management, rules, active response |
 | Wazuh Indexer | Alert and vulnerability data (OpenSearch) |
-| Graylog | Log ingestion and stream management |
-| Grafana | Dashboards and reporting |
 | Velociraptor | DFIR and endpoint forensics |
 | Shuffle | SOAR automation |
 | TheHive | Case management |
@@ -130,7 +128,6 @@ All endpoints live under `/api/v1/`. Interactive docs: `http://localhost:5000/ap
 
 - [ ] Real-time alert streaming via WebSocket
 - [ ] SOAR visual canvas (drag-drop workflow builder)
-- [ ] Automated customer provisioning (Graylog streams, Grafana orgs per tenant)
 - [ ] ScoutSuite cloud security assessment integration
 - [ ] Nuclei web vulnerability scanning integration  
 - [ ] AI-powered alert summarisation (local LLM)
@@ -138,7 +135,6 @@ All endpoints live under `/api/v1/`. Interactive docs: `http://localhost:5000/ap
 - [ ] PDF case reports
 - [ ] Customer portal (read-only view for end customers)
 - [ ] Sigma rule management
-- [ ] InfluxDB metrics integration
 
 ---
 

@@ -1,6 +1,7 @@
 from typing import Annotated
 from fastapi import Depends, HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import decode_token, CREDENTIALS_EXCEPTION
 from app.db.session import AsyncSessionLocal
@@ -27,7 +28,11 @@ async def get_current_user(
     if not credentials:
         raise CREDENTIALS_EXCEPTION
 
-    payload = decode_token(credentials.credentials)
+    try:
+        payload = decode_token(credentials.credentials)
+    except JWTError:
+        raise CREDENTIALS_EXCEPTION
+
     user_id: str | None = payload.get("sub")
     if user_id is None:
         raise CREDENTIALS_EXCEPTION

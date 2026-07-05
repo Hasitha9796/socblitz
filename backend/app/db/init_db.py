@@ -84,17 +84,6 @@ async def seed_connectors_from_env() -> None:
             "password": settings.WAZUH_MANAGER_PASSWORD,
         },
         {
-            "connector_type": ConnectorType.GRAYLOG,
-            "url": settings.GRAYLOG_URL,
-            "api_key": settings.GRAYLOG_API_KEY,
-        },
-        {
-            "connector_type": ConnectorType.GRAFANA,
-            "url": settings.GRAFANA_URL,
-            "username": settings.GRAFANA_USER,
-            "password": settings.GRAFANA_PASSWORD,
-        },
-        {
             "connector_type": ConnectorType.VELOCIRAPTOR,
             "url": settings.VELOCIRAPTOR_URL,
             "api_key": settings.VELOCIRAPTOR_API_KEY,
@@ -120,3 +109,47 @@ async def seed_connectors_from_env() -> None:
             logger.info(f"Seeded connector: {ctype.value}")
 
         await db.commit()
+
+
+async def seed_example_workflows() -> None:
+    """Seed a couple of real starter workflows on first boot, so the SOAR
+    builder isn't an empty canvas — both use real node types end to end."""
+    from app.models import Workflow, WorkflowTrigger
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Workflow).limit(1))
+        if result.scalar_one_or_none():
+            return
+
+        examples = [
+            Workflow(
+                name="Notify Slack on critical alert",
+                description="Posts to Slack whenever a Wazuh alert at critical severity comes in.",
+                trigger_type=WorkflowTrigger.ALERT,
+                trigger_config={"severity": "critical"},
+                nodes=[
+                    {"id": "1", "type": "trigger.alert", "position": {"x": 60, "y": 120},
+                     "data": {"label": "Critical alert", "config": {"severity": "critical"}}},
+                    {"id": "2", "type": "action.slack_notify", "position": {"x": 340, "y": 120},
+                     "data": {"label": "Notify Slack",
+                              "config": {"message": "Critical alert: {{rule_name}} on agent {{agent_name}} ({{agent_ip}})"}}},
+                ],
+                edges=[{"id": "e1-2", "source": "1", "target": "2"}],
+            ),
+            Workflow(
+                name="Block malicious IP",
+                description="Manually block an IP on the reporting agent via Wazuh active response.",
+                trigger_type=WorkflowTrigger.MANUAL,
+                nodes=[
+                    {"id": "1", "type": "trigger.manual", "position": {"x": 60, "y": 120},
+                     "data": {"label": "Manual trigger"}},
+                    {"id": "2", "type": "action.wazuh_active_response", "position": {"x": 340, "y": 120},
+                     "data": {"label": "Block IP",
+                              "config": {"command": "firewall-drop", "agent_id_field": "agent_id"}}},
+                ],
+                edges=[{"id": "e1-2", "source": "1", "target": "2"}],
+            ),
+        ]
+        db.add_all(examples)
+        await db.commit()
+        logger.info(f"Seeded {len(examples)} example workflows")

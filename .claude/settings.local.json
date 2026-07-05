@@ -4,7 +4,8 @@
       "Bash(docker exec *)",
       "Bash(git config *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(python3 -m json.tool)"
     ]
   }
 }

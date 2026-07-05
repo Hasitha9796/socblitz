@@ -30,6 +30,11 @@ async def lifespan(app: FastAPI):
     await seed_connectors_from_env()
     logger.info("Connectors seeded")
 
+    # ── Seed example SOAR workflows ──────────────────────────────────────
+    from app.db.init_db import seed_example_workflows
+    await seed_example_workflows()
+    logger.info("Workflows seeded")
+
     # ── MinIO buckets ────────────────────────────────────────────────────
     from app.services.storage import init_minio_buckets
     await asyncio.to_thread(init_minio_buckets)

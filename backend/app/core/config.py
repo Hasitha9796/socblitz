@@ -64,15 +64,6 @@ class Settings(BaseSettings):
     WAZUH_MANAGER_USER: str = "wazuh-wui"
     WAZUH_MANAGER_PASSWORD: str = ""
 
-    # ── Graylog ──────────────────────────────────────────────────────────────
-    GRAYLOG_URL: str = ""
-    GRAYLOG_API_KEY: str = ""
-
-    # ── Grafana ──────────────────────────────────────────────────────────────
-    GRAFANA_URL: str = ""
-    GRAFANA_USER: str = "admin"
-    GRAFANA_PASSWORD: str = ""
-
     # ── Velociraptor ─────────────────────────────────────────────────────────
     VELOCIRAPTOR_URL: str = ""
     VELOCIRAPTOR_API_KEY: str = ""

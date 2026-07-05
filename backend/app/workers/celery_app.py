@@ -27,10 +27,6 @@ celery_app.conf.update(
             "task": "app.workers.tasks.sync_wazuh_agents",
             "schedule": 300.0,  # every 5 minutes
         },
-        "collect-graylog-alerts": {
-            "task": "app.workers.tasks.collect_graylog_alerts",
-            "schedule": 60.0,   # every minute
-        },
         "sync-vulnerabilities": {
             "task": "app.workers.tasks.sync_vulnerabilities",
             "schedule": 3600.0, # hourly
@@ -46,7 +42,6 @@ celery_app.conf.update(
     },
     task_routes={
         "app.workers.tasks.sync_wazuh_agents":      {"queue": "integrations"},
-        "app.workers.tasks.collect_graylog_alerts":  {"queue": "integrations"},
         "app.workers.tasks.sync_vulnerabilities":    {"queue": "integrations"},
         "app.workers.tasks.enrich_alert":            {"queue": "alerts"},
         "app.workers.tasks.enrich_observable":       {"queue": "alerts"},

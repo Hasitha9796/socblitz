@@ -81,7 +81,7 @@ async def _do_sync_agents():
                 agent = Agent(agent_id=agent_id)
                 db.add(agent)
 
-            agent.name       = raw.get("name")
+            agent.name       = "socblitz-manager" if agent_id == "000" else raw.get("name")
             agent.ip         = raw.get("ip")
             agent.os         = agent_os
             agent.os_version = os_info.get("version") if isinstance(os_info, dict) else None
@@ -91,66 +91,6 @@ async def _do_sync_agents():
             agent.last_seen  = datetime.now(timezone.utc)
             agent.raw_data   = raw
             agent.synced_at  = datetime.now(timezone.utc)
-
-        await db.commit()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Alert collection
-# ─────────────────────────────────────────────────────────────────────────────
-
-@celery_app.task(name="app.workers.tasks.collect_graylog_alerts", bind=True, max_retries=3)
-def collect_graylog_alerts(self):
-    logger.info("Task: collect_graylog_alerts")
-    try:
-        _run_async(_do_collect_alerts())
-    except Exception as exc:
-        logger.error(f"collect_graylog_alerts failed: {exc}")
-        raise self.retry(exc=exc, countdown=30)
-
-
-async def _do_collect_alerts():
-    from app.core.config import settings
-    if not settings.GRAYLOG_API_KEY:
-        logger.debug("GRAYLOG_API_KEY not set — skipping collect_graylog_alerts")
-        return
-    from app.connectors.registry import GraylogClient
-    from app.db.init_db import AsyncSessionLocal
-    from app.models import Alert, AlertSeverity
-    from sqlalchemy import select
-
-    client = GraylogClient()
-    # Example: collect unacknowledged alerts from last 2 minutes
-    results = await client.search("NOT _exists_:socblitz_ingested", timerange_minutes=2)
-    messages = []
-    for query_result in results.get("results", {}).values():
-        for st in query_result.get("search_types", {}).values():
-            messages.extend(st.get("messages", []))
-
-    if not messages:
-        return
-
-    async with AsyncSessionLocal() as db:
-        for msg in messages:
-            m = msg.get("message", {})
-            source_id = m.get("_id") or m.get("id")
-            if not source_id:
-                continue
-
-            # Deduplicate
-            existing = await db.execute(select(Alert).where(Alert.source_id == source_id))
-            if existing.scalar_one_or_none():
-                continue
-
-            alert = Alert(
-                source="graylog",
-                source_id=source_id,
-                description=m.get("message") or m.get("short_message"),
-                severity=AlertSeverity.MEDIUM,
-                agent_name=m.get("source"),
-                raw_data=m,
-            )
-            db.add(alert)
 
         await db.commit()
 
@@ -299,22 +239,47 @@ async def _do_sync_vulns():
 # SOAR workflow execution
 # ─────────────────────────────────────────────────────────────────────────────
 
-@celery_app.task(name="app.workers.tasks.run_workflow", bind=True, max_retries=1)
-def run_workflow(self, workflow_id: str, trigger_data: dict):
-    logger.info(f"Task: run_workflow {workflow_id}")
-    try:
-        result = _run_async(_do_run_workflow(workflow_id, trigger_data))
-        return result
-    except Exception as exc:
-        logger.error(f"run_workflow {workflow_id} failed: {exc}")
-        raise self.retry(exc=exc, countdown=5)
+@celery_app.task(name="app.workers.tasks.run_workflow", bind=True, max_retries=0)
+def run_workflow(self, workflow_id: str, run_id: str, trigger_data: dict):
+    logger.info(f"Task: run_workflow {workflow_id} (run {run_id})")
+    return _run_async(_do_run_workflow(workflow_id, run_id, trigger_data))
 
 
-async def _do_run_workflow(workflow_id: str, trigger_data: dict):
-    # SOAR engine integration point
-    # In production this calls into the SOAR workflow engine built earlier
-    logger.info(f"Executing workflow {workflow_id} with data: {list(trigger_data.keys())}")
-    return {"status": "executed", "workflow_id": workflow_id}
+async def _do_run_workflow(workflow_id: str, run_id: str, trigger_data: dict):
+    from app.db.init_db import AsyncSessionLocal
+    from app.models import Workflow, WorkflowRun, TaskStatus
+    from app.services.workflow_engine import execute_workflow
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        wf_result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+        workflow = wf_result.scalar_one_or_none()
+        run_result = await db.execute(select(WorkflowRun).where(WorkflowRun.id == run_id))
+        run = run_result.scalar_one_or_none()
+
+        if not workflow or not run:
+            logger.warning(f"run_workflow: workflow {workflow_id} or run {run_id} not found")
+            return {"status": "error", "detail": "workflow or run not found"}
+
+        run.status = TaskStatus.RUNNING
+        await db.commit()
+
+        try:
+            node_results = await execute_workflow(workflow.nodes or [], workflow.edges or [], trigger_data)
+            failed = any(not entry["result"].get("ok", False) for entry in node_results)
+            run.status = TaskStatus.FAILED if failed else TaskStatus.SUCCESS
+            run.node_results = node_results
+        except Exception as exc:
+            logger.error(f"run_workflow {workflow_id} failed: {exc}")
+            run.status = TaskStatus.FAILED
+            run.error = str(exc)
+
+        run.finished_at = datetime.now(timezone.utc)
+        workflow.run_count = (workflow.run_count or 0) + 1
+        workflow.last_run_at = run.finished_at
+        await db.commit()
+
+        return {"status": run.status.value, "run_id": run_id, "workflow_id": workflow_id}
 
 
 @celery_app.task(name="app.workers.tasks.process_wazuh_webhook")
@@ -323,21 +288,23 @@ def process_wazuh_webhook(alert_data: dict):
     _run_async(_do_process_wazuh_webhook(alert_data))
 
 
+ALERT_MIN_LEVEL = 12  # only Wazuh rule level >= 12 becomes a SocBlitz Alert
+SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
 async def _do_process_wazuh_webhook(alert_data: dict):
     from app.db.init_db import AsyncSessionLocal
-    from app.models import Alert, AlertSeverity
+    from app.models import Alert, AlertSeverity, Workflow, WorkflowRun, WorkflowTrigger, TaskStatus
+    from sqlalchemy import select
 
     rule = alert_data.get("rule", {})
     level = rule.get("level", 0)
 
-    if level >= 15:
-        severity = AlertSeverity.CRITICAL
-    elif level >= 12:
-        severity = AlertSeverity.HIGH
-    elif level >= 8:
-        severity = AlertSeverity.MEDIUM
-    else:
-        severity = AlertSeverity.LOW
+    if level < ALERT_MIN_LEVEL:
+        logger.debug(f"Wazuh alert level {level} below threshold {ALERT_MIN_LEVEL} — skipping")
+        return
+
+    severity = AlertSeverity.CRITICAL if level >= 15 else AlertSeverity.HIGH
 
     async with AsyncSessionLocal() as db:
         alert = Alert(
@@ -345,11 +312,13 @@ async def _do_process_wazuh_webhook(alert_data: dict):
             source_id=alert_data.get("id"),
             rule_id=str(rule.get("id", "")),
             rule_name=rule.get("description"),
+            level=level,
             description=rule.get("description"),
             severity=severity,
             agent_name=alert_data.get("agent", {}).get("name"),
             agent_ip=alert_data.get("agent", {}).get("ip"),
             agent_id=alert_data.get("agent", {}).get("id"),
+            src_ip=alert_data.get("data", {}).get("srcip"),
             mitre_id=rule.get("mitre", {}).get("id", [None])[0] if isinstance(rule.get("mitre", {}).get("id"), list) else None,
             mitre_tactic=rule.get("mitre", {}).get("tactic", [None])[0] if isinstance(rule.get("mitre", {}).get("tactic"), list) else None,
             raw_data=alert_data,
@@ -357,6 +326,35 @@ async def _do_process_wazuh_webhook(alert_data: dict):
         db.add(alert)
         await db.commit()
         await db.refresh(alert)
+
+        # Auto-trigger any active alert-type workflow whose severity threshold this alert clears.
+        alert_rank = SEVERITY_RANK.get(severity.value, 0)
+        wf_result = await db.execute(
+            select(Workflow).where(Workflow.is_active == True, Workflow.trigger_type == WorkflowTrigger.ALERT)
+        )
+        matched = []
+        for workflow in wf_result.scalars().all():
+            threshold = (workflow.trigger_config or {}).get("severity", "critical")
+            if SEVERITY_RANK.get(threshold, 4) > alert_rank:
+                continue
+            run = WorkflowRun(
+                workflow_id=workflow.id,
+                status=TaskStatus.PENDING,
+                trigger_data={
+                    "alert_id": alert.id, "rule_name": alert.rule_name, "level": alert.level,
+                    "severity": severity.value, "agent_id": alert.agent_id, "agent_name": alert.agent_name,
+                    "agent_ip": alert.agent_ip, "src_ip": alert.src_ip,
+                    "mitre_id": alert.mitre_id, "mitre_tactic": alert.mitre_tactic,
+                },
+            )
+            db.add(run)
+            matched.append((workflow, run))
+
+        if matched:
+            await db.commit()
+            for workflow, run in matched:
+                await db.refresh(run)
+                run_workflow.delay(workflow.id, run.id, run.trigger_data)
 
     enrich_alert.delay(alert.id)
 

@@ -76,6 +76,12 @@ class WazuhIndexerClient(BaseConnector):
         }
         return await self.search("wazuh-alerts-*", body)
 
+    async def get_alert_by_id(self, doc_id: str) -> dict | None:
+        body = {"query": {"ids": {"values": [doc_id]}}, "size": 1}
+        result = await self.search("wazuh-alerts-*", body)
+        hits = result.get("hits", {}).get("hits", [])
+        return hits[0] if hits else None
+
     async def get_sca_results(self, agent_id: str) -> dict:
         body = {
             "query": {"match": {"agent.id": agent_id}},
@@ -123,7 +129,7 @@ class WazuhManagerClient(BaseConnector):
 
     async def list_agents(self, limit: int = 500) -> list[dict]:
         async with await self._authed_client() as c:
-            r = await c.get("/agents", params={"limit": limit, "select": "id,name,ip,os,status,version,group,lastKeepAlive"})
+            r = await c.get("/agents", params={"limit": limit, "select": "id,name,ip,os.platform,os.version,status,version,group,lastKeepAlive"})
             r.raise_for_status()
             return r.json().get("data", {}).get("affected_items", [])
 
@@ -151,70 +157,6 @@ class WazuhManagerClient(BaseConnector):
             r = await c.get("/manager/info")
             r.raise_for_status()
             return r.json()["data"]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Graylog
-# ─────────────────────────────────────────────────────────────────────────────
-
-class GraylogClient(BaseConnector):
-    def __init__(self):
-        self.url = settings.GRAYLOG_URL
-        self.api_key = settings.GRAYLOG_API_KEY
-
-    def _client(self, **kwargs):
-        return super()._client(
-            self.url,
-            headers={
-                "Authorization": f"Basic {__import__('base64').b64encode(f'{self.api_key}:token'.encode()).decode()}",
-                "Content-Type": "application/json",
-                "X-Requested-By": "SocBlitz",
-            }
-        )
-
-    async def test_connection(self) -> tuple[bool, str]:
-        try:
-            async with self._client() as c:
-                r = await c.get("/api/system")
-                return r.status_code == 200, r.json().get("version", "")
-        except Exception as e:
-            return False, str(e)
-
-    async def search(self, query: str, streams: list | None = None, timerange_minutes: int = 60) -> dict:
-        body = {
-            "queries": [{
-                "id": "q1",
-                "query": {"type": "elasticsearch", "query_string": query},
-                "timerange": {"type": "relative", "range": timerange_minutes * 60},
-                "search_types": [{"id": "st1", "type": "messages", "limit": 100, "offset": 0}],
-            }]
-        }
-        if streams:
-            body["queries"][0]["filter"] = {"type": "stream", "streams": streams}
-
-        async with self._client() as c:
-            r = await c.post("/api/views/search/sync", json=body)
-            r.raise_for_status()
-            return r.json()
-
-    async def list_streams(self) -> list[dict]:
-        async with self._client() as c:
-            r = await c.get("/api/streams")
-            r.raise_for_status()
-            return r.json().get("streams", [])
-
-    async def create_stream(self, title: str, description: str, index_set_id: str) -> dict:
-        body = {"title": title, "description": description, "index_set_id": index_set_id}
-        async with self._client() as c:
-            r = await c.post("/api/streams", json=body)
-            r.raise_for_status()
-            return r.json()
-
-    async def send_event(self, message: str, source: str = "SocBlitz") -> None:
-        """GELF UDP would be ideal; this uses HTTP for simplicity."""
-        body = {"short_message": message, "host": source, "_source": "SocBlitz"}
-        async with self._client() as c:
-            await c.post("/api/messages/gelf", json=body)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,46 +244,6 @@ class VelociraptorClient(BaseConnector):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Grafana
-# ─────────────────────────────────────────────────────────────────────────────
-
-class GrafanaClient(BaseConnector):
-    def __init__(self):
-        self.url  = settings.GRAFANA_URL
-        self.user = settings.GRAFANA_USER
-        self.pwd  = settings.GRAFANA_PASSWORD
-
-    def _client(self, **kwargs):
-        return super()._client(self.url, auth=(self.user, self.pwd))
-
-    async def test_connection(self) -> tuple[bool, str]:
-        try:
-            async with self._client() as c:
-                r = await c.get("/api/health")
-                return r.status_code == 200, r.json().get("version", "")
-        except Exception as e:
-            return False, str(e)
-
-    async def list_dashboards(self) -> list[dict]:
-        async with self._client() as c:
-            r = await c.get("/api/search", params={"type": "dash-db"})
-            r.raise_for_status()
-            return r.json()
-
-    async def list_orgs(self) -> list[dict]:
-        async with self._client() as c:
-            r = await c.get("/api/orgs")
-            r.raise_for_status()
-            return r.json()
-
-    async def create_org(self, name: str) -> dict:
-        async with self._client() as c:
-            r = await c.post("/api/orgs", json={"name": name})
-            r.raise_for_status()
-            return r.json()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Connector registry — verify dispatch
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -350,8 +252,6 @@ async def verify_connector(connector: Connector) -> tuple[bool, str]:
     client_map = {
         ConnectorType.WAZUH_INDEXER:  WazuhIndexerClient,
         ConnectorType.WAZUH_MANAGER:  WazuhManagerClient,
-        ConnectorType.GRAYLOG:        GraylogClient,
-        ConnectorType.GRAFANA:        GrafanaClient,
         ConnectorType.VELOCIRAPTOR:   VelociraptorClient,
         ConnectorType.MISP:           MispClient,
     }
