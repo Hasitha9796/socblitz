@@ -15,9 +15,11 @@ import CaseDetail from './pages/CaseDetail'
 import Agents from './pages/Agents'
 import Connectors from './pages/Connectors'
 import ThreatIntel from './pages/ThreatIntel'
+import Forensics from './pages/Forensics'
 import SOAR from './pages/SOAR'
 import WorkflowBuilder from './pages/WorkflowBuilder'
 import Settings from './pages/Settings'
+import AccountSecurity from './pages/AccountSecurity'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -60,11 +62,13 @@ export default function App() {
             <Route path="cases/:id"    element={<CaseDetail />} />
             <Route path="agents"       element={<Agents />} />
             <Route path="threat-intel" element={<ThreatIntel />} />
+            <Route path="forensics"    element={<Forensics />} />
             <Route path="soar"         element={<SOAR />} />
             <Route path="soar/new"     element={<WorkflowBuilder />} />
             <Route path="soar/:id/edit" element={<WorkflowBuilder />} />
             <Route path="connectors"   element={<Connectors />} />
             <Route path="settings"     element={<Settings />} />
+            <Route path="account"      element={<AccountSecurity />} />
           </Route>
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

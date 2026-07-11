@@ -32,6 +32,16 @@ def create_refresh_token(subject: str) -> str:
     )
 
 
+def create_mfa_token(subject: str) -> str:
+    """Short-lived token proving the password step passed; only redeemable at /auth/mfa/verify."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    return jwt.encode(
+        {"sub": subject, "exp": expire, "iat": datetime.now(timezone.utc), "type": "mfa"},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+
 def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
 

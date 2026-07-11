@@ -328,6 +328,198 @@ async def gen_total_events(hours: int = 24, **_) -> dict:
     return {"type": "stat", "title": f"Total events ({hours}h)", "data": total, "config": {}}
 
 
+async def gen_severity_gauge(hours: int = 24, **_) -> dict:
+    """Gauge: what share of all events are high/critical severity (level >= 8)."""
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"severe": {"filter": {"range": {"rule.level": {"gte": 8}}}}},
+        "track_total_hits": True,
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    total = result.get("hits", {}).get("total", {}).get("value", 0)
+    severe = result.get("aggregations", {}).get("severe", {}).get("doc_count", 0)
+    pct = round(100.0 * severe / total, 1) if total else 0.0
+    return {
+        "type": "gauge",
+        "title": f"High-severity share ({hours}h)",
+        "data": pct,
+        "config": {"min": 0, "max": 100, "unit": "%",
+                   "thresholds": [{"upto": 5, "color": "#22c55e"}, {"upto": 20, "color": "#f59e0b"}, {"upto": 100, "color": "#f43f5e"}],
+                   "detail": f"{severe} of {total} events at level 8+"},
+    }
+
+
+_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+async def gen_activity_heatmap(hours: int = 24, **_) -> dict:
+    """Heatmap: event volume by day-of-week x hour-of-day."""
+    from datetime import datetime
+    from app.connectors.registry import WazuhIndexerClient
+
+    window = max(hours, 168)  # a weekly rhythm needs at least a week of buckets
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{window}h"}}},
+        "aggs": {"hourly": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h", "min_doc_count": 0}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("hourly", {}).get("buckets", [])
+
+    cells: dict[tuple[int, int], int] = {}
+    for b in buckets:
+        ts = datetime.fromisoformat(b["key_as_string"].replace("Z", "+00:00"))
+        key = (ts.weekday(), ts.hour)
+        cells[key] = cells.get(key, 0) + b["doc_count"]
+
+    return {
+        "type": "heatmap",
+        "title": f"Activity heatmap — weekday × hour (last {window}h)",
+        "data": [{"y": _WEEKDAYS[d], "x": h, "value": v} for (d, h), v in sorted(cells.items())],
+        "config": {"xLabels": list(range(24)), "yLabels": _WEEKDAYS, "color": ACCENT},
+    }
+
+
+async def gen_level_histogram(hours: int = 24, **_) -> dict:
+    """Histogram of event counts across the numeric rule-level scale."""
+    from app.connectors.registry import WazuhIndexerClient
+
+    client = WazuhIndexerClient()
+    body = {
+        "size": 0,
+        "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+        "aggs": {"levels": {"histogram": {"field": "rule.level", "interval": 1, "min_doc_count": 0}}},
+    }
+    result = await client.search("wazuh-alerts-*", body)
+    buckets = result.get("aggregations", {}).get("levels", {}).get("buckets", [])
+    return {
+        "type": "histogram",
+        "title": f"Rule level distribution ({hours}h)",
+        "data": [{"name": str(int(b["key"])), "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#fbbf24", "valueLabel": "events", "xLabel": "rule level"},
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vulnerability generators — wazuh-states-vulnerabilities-* (current state
+# snapshot, not time-bounded; the hours param is ignored)
+# ─────────────────────────────────────────────────────────────────────────────
+
+VULN_INDEX = "wazuh-states-vulnerabilities-*"
+VULN_SEVERITY_COLORS = {"Critical": "#f43f5e", "High": "#f97316", "Medium": "#f59e0b", "Low": "#67e8f9", "Untriaged": "#64748b"}
+
+
+async def _vuln_search(body: dict) -> dict:
+    from app.connectors.registry import WazuhIndexerClient
+    return await WazuhIndexerClient().search(VULN_INDEX, body)
+
+
+async def gen_vuln_total(**_) -> dict:
+    result = await _vuln_search({"size": 0, "track_total_hits": True})
+    total = result.get("hits", {}).get("total", {}).get("value", 0)
+    return {"type": "stat", "title": "Open vulnerabilities", "data": total, "config": {}}
+
+
+async def gen_vuln_severity(**_) -> dict:
+    body = {"size": 0, "aggs": {"sev": {"terms": {"field": "vulnerability.severity", "size": 10}}}}
+    result = await _vuln_search(body)
+    buckets = result.get("aggregations", {}).get("sev", {}).get("buckets", [])
+    return {
+        "type": "pie",
+        "title": "Vulnerabilities by severity",
+        "data": [{"name": b["key"], "value": b["doc_count"], "color": VULN_SEVERITY_COLORS.get(b["key"], "#94a3b8")}
+                 for b in buckets],
+        "config": {},
+    }
+
+
+async def gen_vuln_top_agents(size: int = 10, **_) -> dict:
+    body = {"size": 0, "aggs": {"agents": {"terms": {"field": "agent.name", "size": size},
+            "aggs": {"critical": {"filter": {"term": {"vulnerability.severity": "Critical"}}}}}}}
+    result = await _vuln_search(body)
+    buckets = result.get("aggregations", {}).get("agents", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": "Most vulnerable agents",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#f97316", "valueLabel": "vulnerabilities"},
+    }
+
+
+async def gen_vuln_top_packages(size: int = 10, **_) -> dict:
+    body = {"size": 0, "aggs": {"pkgs": {"terms": {"field": "package.name", "size": size}}}}
+    result = await _vuln_search(body)
+    buckets = result.get("aggregations", {}).get("pkgs", {}).get("buckets", [])
+    return {
+        "type": "bar",
+        "title": "Most vulnerable packages",
+        "data": [{"name": b["key"], "value": b["doc_count"]} for b in buckets],
+        "config": {"color": "#c084fc", "valueLabel": "findings"},
+    }
+
+
+async def gen_vuln_critical_cves(size: int = 10, **_) -> dict:
+    body = {
+        "size": 0,
+        "query": {"terms": {"vulnerability.severity": ["Critical", "High"]}},
+        "aggs": {"cves": {
+            "terms": {"field": "vulnerability.id", "size": size},
+            "aggs": {
+                "score":    {"max": {"field": "vulnerability.score.base"}},
+                "package":  {"terms": {"field": "package.name", "size": 1}},
+                "agents":   {"cardinality": {"field": "agent.id"}},
+                "severity": {"terms": {"field": "vulnerability.severity", "size": 1}},
+            },
+        }},
+    }
+    result = await _vuln_search(body)
+    buckets = result.get("aggregations", {}).get("cves", {}).get("buckets", [])
+    rows = []
+    for b in buckets:
+        pkg = b.get("package", {}).get("buckets", [])
+        sev = b.get("severity", {}).get("buckets", [])
+        score = b.get("score", {}).get("value")
+        rows.append({
+            "CVE": b["key"],
+            "Severity": sev[0]["key"] if sev else "—",
+            "CVSS": round(score, 1) if score is not None else "—",
+            "Package": pkg[0]["key"] if pkg else "—",
+            "Agents": b.get("agents", {}).get("value", 0),
+        })
+    rows.sort(key=lambda r: (r["CVSS"] if isinstance(r["CVSS"], float) else 0), reverse=True)
+    return {
+        "type": "table",
+        "title": "Top critical & high CVEs",
+        "columns": ["CVE", "Severity", "CVSS", "Package", "Agents"],
+        "data": rows,
+        "config": {},
+    }
+
+
+async def gen_vuln_critical_gauge(**_) -> dict:
+    body = {
+        "size": 0, "track_total_hits": True,
+        "aggs": {"severe": {"filter": {"terms": {"vulnerability.severity": ["Critical", "High"]}}}},
+    }
+    result = await _vuln_search(body)
+    total = result.get("hits", {}).get("total", {}).get("value", 0)
+    severe = result.get("aggregations", {}).get("severe", {}).get("doc_count", 0)
+    pct = round(100.0 * severe / total, 1) if total else 0.0
+    return {
+        "type": "gauge",
+        "title": "Critical + high share",
+        "data": pct,
+        "config": {"min": 0, "max": 100, "unit": "%",
+                   "thresholds": [{"upto": 10, "color": "#22c55e"}, {"upto": 30, "color": "#f59e0b"}, {"upto": 100, "color": "#f43f5e"}],
+                   "detail": f"{severe} of {total} findings are Critical/High"},
+    }
+
+
 async def gen_alert_severity_breakdown(db=None, **_) -> dict:
     """Curated (triaged) alert severity — from the Postgres alerts table, not raw events."""
     from sqlalchemy import select, func
@@ -374,8 +566,17 @@ GENERATORS = {
     "auth_failures":            gen_auth_failures,
     "top_rule_groups":          gen_top_rule_groups,
     "total_events":             gen_total_events,
+    "severity_gauge":           gen_severity_gauge,
+    "activity_heatmap":         gen_activity_heatmap,
+    "level_histogram":          gen_level_histogram,
     "alert_severity_breakdown": gen_alert_severity_breakdown,
     "agent_status":             gen_agent_status,
+    "vuln_total":               gen_vuln_total,
+    "vuln_severity":            gen_vuln_severity,
+    "vuln_top_agents":          gen_vuln_top_agents,
+    "vuln_top_packages":        gen_vuln_top_packages,
+    "vuln_critical_cves":       gen_vuln_critical_cves,
+    "vuln_critical_gauge":      gen_vuln_critical_gauge,
 }
 
 GENERATOR_LABELS = {
@@ -393,8 +594,17 @@ GENERATOR_LABELS = {
     "auth_failures": "Authentication failures over time",
     "top_rule_groups": "Top event categories",
     "total_events": "Total events",
+    "severity_gauge": "High-severity share",
+    "activity_heatmap": "Activity heatmap",
+    "level_histogram": "Rule level histogram",
     "alert_severity_breakdown": "Triaged alert severity",
     "agent_status": "Agent status",
+    "vuln_total": "Open vulnerabilities",
+    "vuln_severity": "Vulnerabilities by severity",
+    "vuln_top_agents": "Most vulnerable agents",
+    "vuln_top_packages": "Most vulnerable packages",
+    "vuln_critical_cves": "Top critical & high CVEs",
+    "vuln_critical_gauge": "Critical + high share",
 }
 
 INTENT_KEYWORDS = {
@@ -412,8 +622,17 @@ INTENT_KEYWORDS = {
     "auth_failures":            ["auth", "login", "logon", "brute", "failed password", "ssh fail", "credential", "password guess"],
     "top_rule_groups":          ["group", "category", "categories", "kind of event", "type of event", "types of event"],
     "total_events":             ["total", "how many events", "count of events", "event count"],
+    "severity_gauge":           ["gauge", "threat level", "risk meter", "health score", "severity ratio", "share of"],
+    "activity_heatmap":         ["heatmap", "heat map", "pattern", "off-hours", "weekend", "day of week", "hour of day"],
+    "level_histogram":          ["histogram", "distribution", "spread of"],
     "alert_severity_breakdown": ["triaged", "alert severity", "escalated alerts"],
     "agent_status":             ["agent status", "online agents", "offline agents", "agent health"],
+    "vuln_total":               ["how many vulnerabilities", "vulnerability count", "total vulnerabilities"],
+    "vuln_severity":            ["vulnerability severity", "vulnerabilities by severity", "vuln breakdown"],
+    "vuln_top_agents":          ["vulnerable agents", "vulnerable hosts", "vulnerable machines", "which agents are vulnerable"],
+    "vuln_top_packages":        ["vulnerable packages", "vulnerable software", "outdated packages"],
+    "vuln_critical_cves":       ["cve", "critical vulnerabilities", "top vulnerabilities", "worst cves", "cvss"],
+    "vuln_critical_gauge":      ["vulnerability risk", "patch priority", "vuln ratio"],
 }
 
 # Generic fallback when nothing matches — a broad events overview, NOT the
@@ -438,18 +657,28 @@ GENERATOR_DESCRIPTIONS = {
     "auth_failures":            "Authentication failure timeline — brute-force signal (line)",
     "top_rule_groups":          "Event volume by rule group/category (bar)",
     "total_events":             "Single total event count (stat)",
+    "severity_gauge":           "Gauge of the percentage of events at high/critical severity (gauge)",
+    "activity_heatmap":         "Event volume by day-of-week x hour-of-day (heatmap)",
+    "level_histogram":          "Event counts across the numeric rule level scale (histogram)",
     "alert_severity_breakdown": "Triaged SocBlitz alert counts by severity (pie)",
     "agent_status":             "Agent online/offline status counts (pie)",
+    "vuln_total":               "Total open vulnerability findings across all agents (stat)",
+    "vuln_severity":            "Vulnerability findings split by severity (pie)",
+    "vuln_top_agents":          "Agents with the most open vulnerabilities (bar)",
+    "vuln_top_packages":        "Software packages with the most vulnerability findings (bar)",
+    "vuln_critical_cves":       "Worst Critical/High CVEs with CVSS score, package and affected agents (table)",
+    "vuln_critical_gauge":      "Percentage of findings at Critical/High severity (gauge)",
 }
 
 
-async def llm_parse_prompt(prompt: str) -> dict | None:
+async def llm_parse_prompt(prompt: str, catalog_entries: list[dict] | None = None) -> dict | None:
     """Ask a configured LLM to pick generators + params for the prompt.
 
     Uses whichever is configured: OPENAI_API_KEY (api.openai.com) or
-    LOCAL_LLM_URL (any OpenAI-compatible server, e.g. Ollama). Returns
-    {"generators": [...], "size": int|None, "chart": str|None} or None if no
-    LLM is configured / the call fails — callers then fall back to keywords.
+    LOCAL_LLM_URL (any OpenAI-compatible server, e.g. Ollama). When
+    catalog_entries (RAG shortlist) is given, the model only chooses among
+    those. Returns {"generators": [...], "size": int|None, "chart": str|None}
+    or None if no LLM is configured / the call fails.
     """
     import json as _json
     import httpx
@@ -467,7 +696,13 @@ async def llm_parse_prompt(prompt: str) -> dict | None:
     else:
         return None
 
-    catalog = "\n".join(f"- {k}: {v}" for k, v in GENERATOR_DESCRIPTIONS.items())
+    if catalog_entries:
+        catalog = "\n".join(
+            f"- {e['generator']}: {e['title']} ({e['viz']}) — {e['doc'].split('. ')[0]}"
+            for e in catalog_entries
+        )
+    else:
+        catalog = "\n".join(f"- {k}: {v}" for k, v in GENERATOR_DESCRIPTIONS.items())
     system = (
         "You select dashboard widgets for a SOC analyst. Given the user's request, "
         "pick 1-4 generator keys from this catalog that best answer it:\n"
@@ -576,6 +811,23 @@ async def run_generator(key: str, db=None, hours: int = 24, params: dict | None 
     return await fn(hours=hours, db=db, **(params or {}))
 
 
+async def analyze_vulnerabilities(db=None, hours: int = 24) -> dict:
+    """Built-in vulnerability dashboard over wazuh-states-vulnerabilities-*."""
+    import asyncio as _asyncio
+    generators = [
+        gen_vuln_total(), gen_vuln_critical_gauge(), gen_vuln_severity(),
+        gen_vuln_top_agents(), gen_vuln_top_packages(), gen_vuln_critical_cves(),
+    ]
+    results = await _asyncio.gather(*generators, return_exceptions=True)
+    widgets = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning(f"vulnerability widget failed: {r}")
+            continue
+        widgets.append(r)
+    return {"widgets": widgets, "hours": hours}
+
+
 async def analyze_flooding_and_noise(db, hours: int = 24) -> dict:
     """The core ask: what's flooding, and what quiet-but-risky signal is it burying."""
     widgets = [
@@ -587,17 +839,35 @@ async def analyze_flooding_and_noise(db, hours: int = 24) -> dict:
 
 
 async def build_dashboard(prompt: str, db, hours: int = 24) -> dict:
-    # Agentic path first: a configured LLM picks generators/params from the
-    # catalog. Falls back to the keyword heuristic when no LLM is set up.
+    # Tiered agentic flow:
+    #   1. RAG retrieval shortlists the most relevant visualizations
+    #   2. the LLM picks among the shortlist (mode "rag+llm")
+    #   3. no LLM → the retrieval ranking itself decides (mode "rag")
+    #   4. retrieval empty/broken → keyword heuristic (mode "keywords")
+    from app.services.viz_rag import retrieve
+
+    retrieved = []
+    try:
+        retrieved = await retrieve(prompt, k=6)
+    except Exception as e:
+        logger.warning(f"viz RAG retrieval failed: {e}")
+
     mode = "keywords"
-    llm = await llm_parse_prompt(prompt)
+    llm = await llm_parse_prompt(prompt, catalog_entries=retrieved or None)
     if llm:
-        mode = "llm"
+        mode = "rag+llm" if retrieved else "llm"
         keys = llm["generators"]
         params = {}
         if llm.get("size"):
             params["size"] = max(3, min(25, int(llm["size"])))
         hint = llm.get("chart")
+    elif retrieved and retrieved[0]["score"] > 0:
+        # Retrieval-only: keep the top hit plus close runners-up (within 85%).
+        mode = "rag"
+        top = retrieved[0]["score"]
+        keys = [e["generator"] for e in retrieved if e["score"] >= 0.85 * top][:3]
+        params = parse_prompt_params(prompt)
+        hint = parse_chart_hint(prompt)
     else:
         keys = parse_prompt_to_generators(prompt)
         params = parse_prompt_params(prompt)
@@ -622,7 +892,10 @@ async def build_dashboard(prompt: str, db, hours: int = 24) -> dict:
         summary = f"Built {len(widgets)} widget(s) from your prompt: " + ", ".join(w["title"] for w in widgets)
     else:
         summary = "Couldn't build any widgets yet — there may not be enough event data in this window."
-    return {"prompt": prompt, "matched": keys, "mode": mode, "widgets": widgets, "summary": summary}
+    return {
+        "prompt": prompt, "matched": keys, "mode": mode, "widgets": widgets, "summary": summary,
+        "retrieved": [{"generator": e["generator"], "viz": e["viz"], "score": e["score"], "method": e["method"]} for e in retrieved],
+    }
 
 
 async def resolve_widgets(recipes: list[dict], db, hours: int = 24) -> list[dict]:

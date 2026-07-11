@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Search, Filter, CheckCircle, AlertOctagon } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { formatDistanceToNow } from 'date-fns'
 import { api } from '../stores/auth'
+import { TimeRangeFilter, rangeToParams, DEFAULT_RANGE, type TimeRange } from '../components/TimeRangeFilter'
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const
 const STATUSES   = ['new', 'in_triage', 'escalated', 'resolved', 'false_positive'] as const
@@ -25,17 +26,30 @@ export default function Alerts() {
   const [sev,    setSev]    = useState('')
   const [status, setStatus] = useState('')
   const [search, setSearch] = useState('')
+  const [q,      setQ]      = useState('')
+  const [range,  setRange]  = useState<TimeRange>(DEFAULT_RANGE)
   const qc = useQueryClient()
 
-  const { data: alerts, isLoading, refetch } = useQuery({
-    queryKey: ['alerts', sev, status],
+  // Debounce the query box → server-side field:value filter.
+  useEffect(() => {
+    const t = setTimeout(() => setQ(search.trim()), 400)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const { data: alerts, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['alerts', sev, status, range, q],
     queryFn: () => api.listAlerts({
       ...(sev    ? { severity: sev } : {}),
       ...(status ? { status }        : {}),
+      ...(q      ? { q }             : {}),
+      ...rangeToParams(range),
       limit: 200,
     }).then((r) => r.data),
     refetchInterval: 20_000,
+    retry: false,
   })
+
+  const queryError = isError ? ((error as any)?.response?.data?.detail || 'Query failed') : null
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => api.updateAlert(id, data),
@@ -45,10 +59,8 @@ export default function Alerts() {
     },
   })
 
-  const filtered = (alerts || []).filter((a: any) =>
-    !search || [a.rule_name, a.description, a.agent_name, a.src_ip]
-      .some((f: any) => f?.toLowerCase().includes(search.toLowerCase()))
-  )
+  // `q` is applied server-side; the returned rows are already filtered.
+  const filtered = alerts || []
 
   const counts = SEVERITIES.reduce((acc, s) => {
     acc[s] = (alerts || []).filter((a: any) => a.severity === s).length
@@ -68,6 +80,7 @@ export default function Alerts() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <TimeRangeFilter value={range} onChange={setRange} />
           <button onClick={() => refetch()} className="btn-secondary">
             <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
             Refresh
@@ -117,15 +130,20 @@ export default function Alerts() {
 
         <div style={{ flex: 1, minWidth: 200 }} />
 
-        {/* Search */}
+        {/* Query filter (field:value mini-DSL) */}
         <div style={{ position: 'relative' }}>
           <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
           <input
             className="input"
-            style={{ paddingLeft: 30, width: 200, padding: '6px 10px 6px 30px' }}
-            placeholder="Search rules, agents, IPs…"
+            style={{
+              paddingLeft: 30, width: 320, padding: '6px 10px 6px 30px',
+              fontFamily: 'JetBrains Mono,monospace', fontSize: 12,
+              outline: queryError ? '1px solid #f43f5e88' : undefined,
+            }}
+            placeholder="Filter — e.g. agent:web-01 level:>=10"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            spellCheck={false}
           />
         </div>
 
@@ -142,6 +160,16 @@ export default function Alerts() {
           ))}
         </select>
       </div>
+
+      {queryError && (
+        <div style={{
+          fontSize: 12, color: '#f87171', padding: '8px 12px',
+          background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.2)',
+          borderRadius: 6, fontFamily: 'JetBrains Mono,monospace',
+        }}>
+          {queryError}
+        </div>
+      )}
 
       {/* ── Table ───────────────────────────────────────────────────── */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>

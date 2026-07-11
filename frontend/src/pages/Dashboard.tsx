@@ -10,6 +10,7 @@ import {
 import { api } from '../stores/auth'
 import { formatDistanceToNow } from 'date-fns'
 import { useNavigate } from 'react-router-dom'
+import { connectorMeta } from '../lib/connectors'
 
 /* ── Severity palette ─────────────────────────────────────────────────────── */
 const SEV_COLOR: Record<string, string> = {
@@ -96,7 +97,7 @@ function MetricCard({
 
 /* ── Connector pill ───────────────────────────────────────────────────────── */
 function ConnectorPill({ c }: { c: any }) {
-  const name = c.connector_type.replace(/_/g, ' ')
+  const name = connectorMeta(c.connector_type).label
   return (
     <div
       style={{
@@ -109,7 +110,7 @@ function ConnectorPill({ c }: { c: any }) {
       {c.verified
         ? <Wifi size={13} color="#22c55e" />
         : <WifiOff size={13} color="#f43f5e" />}
-      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-2)', textTransform: 'capitalize' }}>{name}</span>
+      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-2)' }}>{name}</span>
     </div>
   )
 }

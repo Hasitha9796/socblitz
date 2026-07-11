@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     VELOCIRAPTOR_USER: str = "admin"
     VELOCIRAPTOR_PASSWORD: str = ""
 
+    # ── Unified agent deployment ─────────────────────────────────────────────
+    # Shared key required to download the SocBlitz Agent installer + Velociraptor
+    # client config/binary (endpoints fetch these unauthenticated during enrol).
+    AGENT_ENROLL_KEY: str = ""
+    # Optional override for the address endpoints use to reach this server.
+    # Empty → derived from the Host header of the request that fetched the installer.
+    AGENT_PUBLIC_HOST: str = ""
+
     # ── Shuffle ──────────────────────────────────────────────────────────────
     SHUFFLE_URL: str = ""
     SHUFFLE_API_KEY: str = ""
@@ -86,6 +94,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     LOCAL_LLM_URL: str = ""
     LOCAL_LLM_MODEL: str = ""
+    LOCAL_EMBED_MODEL: str = "nomic-embed-text"
 
     # ── Notifications ────────────────────────────────────────────────────────
     SMTP_HOST: str = ""

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Sparkles, RefreshCw, Save, Plus, Flame, Send, ChevronDown, Trash2 } from 'lucide-react'
+import { Sparkles, RefreshCw, Save, Plus, Flame, Send, ChevronDown, Trash2, ShieldAlert } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { api } from '../stores/auth'
 import DashboardWidget from '../components/DashboardWidget'
@@ -20,6 +20,7 @@ const PROMPT_SUGGESTIONS = [
 ]
 
 const INSIGHTS_VIEW = '__insights__'
+const VULNS_VIEW = '__vulns__'
 
 function widgetKey(w: any) {
   return w.generator + JSON.stringify(w.params || {})
@@ -37,6 +38,8 @@ export default function CustomDashboard() {
   const [dirty, setDirty] = useState(false)
 
   const isInsights = view === INSIGHTS_VIEW
+  const isVulns = view === VULNS_VIEW
+  const isBuiltin = isInsights || isVulns
 
   const { data: dashboards } = useQuery({
     queryKey: ['ai-dashboards'],
@@ -47,6 +50,12 @@ export default function CustomDashboard() {
     queryKey: ['ai-insights-flooding', hours],
     queryFn: () => api.floodingInsights(hours).then((r) => r.data),
     enabled: isInsights,
+  })
+
+  const { data: vulns, isLoading: vulnsLoading, refetch: refetchVulns } = useQuery({
+    queryKey: ['ai-insights-vulns'],
+    queryFn: () => api.vulnInsights(hours).then((r) => r.data),
+    enabled: isVulns,
   })
 
   const { data: saved, isLoading: savedLoading } = useQuery({
@@ -107,7 +116,7 @@ export default function CustomDashboard() {
   })
 
   function addWidget(w: any) {
-    if (isInsights) {
+    if (isBuiltin) {
       toast('Select or create a dashboard first (dropdown at the top)', { icon: '👆' })
       return
     }
@@ -133,6 +142,8 @@ export default function CustomDashboard() {
   const generated = generateMutation.data
   const currentName = isInsights
     ? 'Flooding & noise insights'
+    : isVulns
+    ? 'Vulnerability dashboard'
     : (dashboards || []).find((d: any) => d.id === view)?.name || 'Dashboard'
 
   return (
@@ -166,11 +177,12 @@ export default function CustomDashboard() {
           onClick={() => setMenuOpen((o) => !o)}
         >
           {isInsights && <Flame size={13} color="#f97316" />}
+          {isVulns && <ShieldAlert size={13} color="#f43f5e" />}
           {currentName}
           <ChevronDown size={13} style={{ transition: 'transform 0.15s', transform: menuOpen ? 'rotate(180deg)' : 'none' }} />
         </button>
 
-        {!isInsights && (
+        {!isBuiltin && (
           <>
             <button
               className="btn-primary"
@@ -189,9 +201,13 @@ export default function CustomDashboard() {
             </button>
           </>
         )}
-        {isInsights && (
-          <button className="btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }} onClick={() => refetchInsights()}>
-            <RefreshCw size={12} className={insightsLoading ? 'animate-spin' : ''} /> Refresh
+        {isBuiltin && (
+          <button
+            className="btn-ghost"
+            style={{ fontSize: 11, padding: '6px 12px' }}
+            onClick={() => (isInsights ? refetchInsights() : refetchVulns())}
+          >
+            <RefreshCw size={12} className={(isInsights ? insightsLoading : vulnsLoading) ? 'animate-spin' : ''} /> Refresh
           </button>
         )}
 
@@ -210,6 +226,13 @@ export default function CustomDashboard() {
               onClick={() => { setView(INSIGHTS_VIEW); setMenuOpen(false) }}
             >
               <Flame size={12} color="#f97316" /> Flooding &amp; noise insights
+            </button>
+            <button
+              className="btn-ghost"
+              style={{ justifyContent: 'flex-start', fontSize: 12, padding: '8px 10px', display: 'flex', gap: 8, alignItems: 'center' }}
+              onClick={() => { setView(VULNS_VIEW); setMenuOpen(false) }}
+            >
+              <ShieldAlert size={12} color="#f43f5e" /> Vulnerability dashboard
             </button>
             {(dashboards || []).map((d: any) => (
               <button
@@ -263,6 +286,21 @@ export default function CustomDashboard() {
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
             {(insights?.widgets || []).map((w: any) => (
+              <DashboardWidget key={w.title} widget={w} />
+            ))}
+          </div>
+        )
+      ) : isVulns ? (
+        vulnsLoading ? (
+          <div className="empty-state"><RefreshCw size={16} className="animate-spin" style={{ color: 'var(--text-3)' }} /><span>Scanning vulnerability state…</span></div>
+        ) : (vulns?.widgets || []).every((w: any) => !w.data || (Array.isArray(w.data) && w.data.length === 0)) ? (
+          <div className="empty-state">
+            <ShieldAlert size={16} color="#f43f5e" />
+            <span>No vulnerability data yet — enroll Wazuh agents with vulnerability detection enabled and findings will appear here</span>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+            {(vulns?.widgets || []).map((w: any) => (
               <DashboardWidget key={w.title} widget={w} />
             ))}
           </div>

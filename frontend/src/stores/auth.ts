@@ -42,11 +42,14 @@ apiClient.interceptors.request.use((config) => {
   return config
 })
 
-// Auto-logout on 401
+// Auto-logout on 401 — except for sign-in attempts themselves (a wrong
+// password or MFA code must not trigger the redirect/reload)
 apiClient.interceptors.response.use(
   (r) => r,
   (err) => {
-    if (err.response?.status === 401) {
+    const url: string = err.config?.url || ''
+    const isAuthAttempt = url.includes('/auth/login') || url.includes('/auth/mfa/verify')
+    if (err.response?.status === 401 && !isAuthAttempt) {
       useAuthStore.getState().clearAuth()
       window.location.href = '/login'
     }
@@ -57,12 +60,24 @@ apiClient.interceptors.response.use(
 // ─── API helper functions ─────────────────────────────────────────────────────
 export const api = {
   // Auth
+  // Sign-in calls get a hard timeout so the button never spins forever when
+  // the backend is down or restarting. Other endpoints keep the default
+  // (no timeout) — AI dashboard generation can legitimately take minutes.
   login:       (email: string, password: string) =>
     apiClient.post('/auth/login', new URLSearchParams({ username: email, password }),
-                  { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }),
+                  { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }),
   me:          () => apiClient.get('/auth/me'),
   listUsers:   () => apiClient.get('/auth/users'),
   createUser:  (data: any) => apiClient.post('/auth/users', data),
+
+  // MFA
+  mfaVerify:   (mfaToken: string, code: string) =>
+    apiClient.post('/auth/mfa/verify', { mfa_token: mfaToken, code }, { timeout: 15_000 }),
+  mfaSetup:    () => apiClient.post('/auth/mfa/setup'),
+  mfaEnable:   (code: string) => apiClient.post('/auth/mfa/enable', { code }),
+  mfaDisable:  (password: string, code: string) =>
+    apiClient.post('/auth/mfa/disable', { password, code }),
+  mfaResetUser: (userId: string) => apiClient.post(`/auth/users/${userId}/mfa/reset`),
 
   // Dashboard / health
   health:      () => apiClient.get('/health/detailed'),
@@ -80,6 +95,7 @@ export const api = {
 
   // AI dashboard agent
   floodingInsights:  (hours = 24) => apiClient.get('/ai/insights/flooding', { params: { hours } }),
+  vulnInsights:      (hours = 24) => apiClient.get('/ai/insights/vulnerabilities', { params: { hours } }),
   generateDashboard: (prompt: string, hours = 24) => apiClient.post('/ai/dashboard/generate', { prompt, hours }),
   listDashboards:    () => apiClient.get('/ai/dashboards'),
   createDashboard:   (name: string) => apiClient.post('/ai/dashboards', { name }),
@@ -92,14 +108,21 @@ export const api = {
   getCase:     (id: string) => apiClient.get(`/cases/${id}`),
   createCase:  (data: any) => apiClient.post('/cases', data),
   updateCase:  (id: string, data: any) => apiClient.patch(`/cases/${id}`, data),
+  listCaseTemplates: () => apiClient.get('/cases/templates'),
   addComment:  (caseId: string, content: string, isInternal = true) =>
     apiClient.post(`/cases/${caseId}/comments`, { content, is_internal: isInternal }),
   getComments: (caseId: string) => apiClient.get(`/cases/${caseId}/comments`),
+  updateComment: (caseId: string, commentId: string, content: string) =>
+    apiClient.patch(`/cases/${caseId}/comments/${commentId}`, { content }),
   addObservable: (caseId: string, data: any) =>
     apiClient.post(`/cases/${caseId}/observables`, data),
   getObservables: (caseId: string) => apiClient.get(`/cases/${caseId}/observables`),
+  updateObservable: (caseId: string, obsId: string, data: any) =>
+    apiClient.patch(`/cases/${caseId}/observables/${obsId}`, data),
   deleteObservable: (caseId: string, obsId: string) =>
     apiClient.delete(`/cases/${caseId}/observables/${obsId}`),
+  correlateObservable: (caseId: string, obsId: string) =>
+    apiClient.get(`/cases/${caseId}/observables/${obsId}/correlate`),
   getCaseTimeline:   (caseId: string) => apiClient.get(`/cases/${caseId}/timeline`),
   addTimelineEvent:  (caseId: string, description: string, mitreTechniques: string[] = []) =>
     apiClient.post(`/cases/${caseId}/timeline`, { description, event_type: 'manual', mitre_techniques: mitreTechniques }),
@@ -122,6 +145,8 @@ export const api = {
   // Case evidence
   listCaseEvidence:  (caseId: string) => apiClient.get(`/cases/${caseId}/evidence`),
   createCaseEvidence:(caseId: string, data: any) => apiClient.post(`/cases/${caseId}/evidence`, data),
+  updateCaseEvidence:(caseId: string, evidenceId: string, data: any) =>
+    apiClient.patch(`/cases/${caseId}/evidence/${evidenceId}`, data),
   deleteCaseEvidence:(caseId: string, evidenceId: string) =>
     apiClient.delete(`/cases/${caseId}/evidence/${evidenceId}`),
 
@@ -152,6 +177,7 @@ export const api = {
   // Agents
   listAgents:  (params?: any) => apiClient.get('/agents', { params }),
   syncAgents:  () => apiClient.post('/agents/sync'),
+  deleteAgent: (id: string) => apiClient.delete(`/agents/${id}`),
   agentVulns:  (id: string) => apiClient.get(`/agents/${id}/vulnerabilities`),
 
   // Connectors
@@ -162,6 +188,15 @@ export const api = {
   // Threat Intel
   lookupIoc:    (value: string, type: string) => apiClient.post('/threat-intel/lookup', { value, type }),
   mispEvents:   () => apiClient.get('/threat-intel/misp/events'),
+
+  // Forensics (Velociraptor)
+  agentDeployCommand: () => apiClient.get('/agent-deploy/command'),
+  forensicsClients: () => apiClient.get('/forensics/clients'),
+  forensicsFlows:   (clientId: string) => apiClient.get(`/forensics/clients/${clientId}/flows`),
+  forensicsCollect: (clientId: string, artifact: string, parameters?: Record<string, string>) =>
+    apiClient.post('/forensics/collect', { client_id: clientId, artifact, parameters }),
+  forensicsResults: (clientId: string, flowId: string, artifact: string) =>
+    apiClient.get(`/forensics/clients/${clientId}/flows/${flowId}/results`, { params: { artifact } }),
 
   // Tenants
   listTenants:  () => apiClient.get('/tenants'),

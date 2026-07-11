@@ -47,6 +47,9 @@ async def _do_sync_agents():
     agents_raw = await client.list_agents()
 
     async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Agent))
+        existing = {a.agent_id: a for a in result.scalars().all()}
+
         for raw in agents_raw:
             agent_id = str(raw.get("id", ""))
             if not agent_id:
@@ -75,11 +78,11 @@ async def _do_sync_agents():
             agent_status = status_map.get(raw_status, AgentStatus.DISCONNECTED)
 
             # Upsert
-            result = await db.execute(select(Agent).where(Agent.agent_id == agent_id))
-            agent = result.scalar_one_or_none()
+            agent = existing.get(agent_id)
             if agent is None:
                 agent = Agent(agent_id=agent_id)
                 db.add(agent)
+                existing[agent_id] = agent
 
             agent.name       = "socblitz-manager" if agent_id == "000" else raw.get("name")
             agent.ip         = raw.get("ip")
@@ -217,20 +220,15 @@ async def _do_sync_vulns():
     from sqlalchemy import select
 
     client = WazuhIndexerClient()
+    # One aggregation sweep for the whole fleet — never one query per agent.
+    counts = await client.get_vulnerability_counts_by_agent()
+
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Agent))
-        agents = result.scalars().all()
-
-        for agent in agents:
-            try:
-                data = await client.get_agent_vulnerabilities(agent.agent_id)
-                hits = data.get("hits", {}).get("hits", [])
-                total = data.get("hits", {}).get("total", {}).get("value", 0)
-                critical = sum(1 for h in hits if h.get("_source", {}).get("vulnerability", {}).get("severity", "").lower() == "critical")
-                agent.vuln_count = total
-                agent.critical_vulns = critical
-            except Exception as e:
-                logger.debug(f"Vuln sync failed for agent {agent.agent_id}: {e}")
+        for agent in result.scalars().all():
+            c = counts.get(agent.agent_id, {})
+            agent.vuln_count = c.get("total", 0)
+            agent.critical_vulns = c.get("critical", 0)
 
         await db.commit()
 

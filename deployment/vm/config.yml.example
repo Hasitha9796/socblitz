@@ -1,0 +1,32 @@
+# SocBlitz VM distributed deployment — node map.
+#
+# Standard wazuh-certs-tool format: the same file drives certificate
+# generation AND every role install (opensearch.yml, ossec.conf, the LB
+# upstream list are all derived from it).
+#
+#   cp config.yml.example config.yml     # edit every IP
+#   sudo bash socblitz-install.sh -g --app-tier-ip 10.0.0.40 --lb-ip 10.0.0.5
+#
+# Add/remove worker or indexer entries to match your fleet size
+# (sizing guidance: ../README.md). Node names become certificate CNs —
+# use exactly these names in the per-host install commands.
+
+nodes:
+  indexer:
+    - name: wazuh-indexer-1
+      ip: "10.0.0.11"
+    - name: wazuh-indexer-2
+      ip: "10.0.0.12"
+    - name: wazuh-indexer-3
+      ip: "10.0.0.13"
+
+  server:
+    - name: wazuh-master
+      ip: "10.0.0.21"
+      node_type: master
+    - name: wazuh-worker-1
+      ip: "10.0.0.22"
+      node_type: worker
+    - name: wazuh-worker-2
+      ip: "10.0.0.23"
+      node_type: worker

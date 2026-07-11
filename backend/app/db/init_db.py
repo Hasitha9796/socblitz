@@ -33,6 +33,14 @@ async def init_db() -> None:
         else:
             raise
 
+    # create_all only creates missing tables — it never adds columns to
+    # existing ones, so evolve the users table for MFA explicitly.
+    from sqlalchemy import text
+    async with engine.begin() as conn:
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64)"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_backup_codes JSONB"))
+
     async with AsyncSessionLocal() as db:
         from app.models import User, UserRole, Tenant
         from app.core.auth import hash_password

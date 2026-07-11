@@ -1,0 +1,32 @@
+# Certificate definition for the DISTRIBUTED deployment.
+# Copy to certs.yml and replace every IP with the real host IP (or DNS name)
+# of that node — certs are validated against these when nodes talk to each
+# other across hosts.
+#
+# Generate ON ONE MACHINE, then copy each node's cert pair + root-ca.pem to
+# the matching host (see README, "Certificates").
+#
+#   cp certs.yml.example certs.yml   # edit IPs
+#   docker compose -f generate-certs.yml run --rm generator
+nodes:
+  indexer:
+    - name: wazuh-indexer-1
+      ip: "10.0.0.11"
+    - name: wazuh-indexer-2
+      ip: "10.0.0.12"
+    - name: wazuh-indexer-3
+      ip: "10.0.0.13"
+  server:
+    - name: wazuh-master
+      ip: "10.0.0.21"
+    - name: wazuh-worker-1
+      ip: "10.0.0.22"
+    - name: wazuh-worker-2
+      ip: "10.0.0.23"
+    - name: wazuh-worker-3
+      ip: "10.0.0.24"
+    - name: wazuh-worker-4
+      ip: "10.0.0.25"
+  dashboard:
+    - name: wazuh-dashboard
+      ip: "10.0.0.21"

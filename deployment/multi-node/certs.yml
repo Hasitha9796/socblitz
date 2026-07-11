@@ -1,0 +1,18 @@
+nodes:
+  indexer:
+    - name: wazuh-indexer-1
+      ip: "127.0.0.1"
+    - name: wazuh-indexer-2
+      ip: "127.0.0.1"
+    - name: wazuh-indexer-3
+      ip: "127.0.0.1"
+  server:
+    - name: wazuh-master
+      ip: "127.0.0.1"
+    - name: wazuh-worker-1
+      ip: "127.0.0.1"
+    - name: wazuh-worker-2
+      ip: "127.0.0.1"
+  dashboard:
+    - name: wazuh-dashboard
+      ip: "127.0.0.1"

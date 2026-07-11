@@ -23,6 +23,7 @@ interface NewCaseForm {
   title: string
   description: string
   priority: string
+  template: string
 }
 
 export default function Cases() {
@@ -31,7 +32,7 @@ export default function Cases() {
   const [search,     setSearch]    = useState('')
   const [statusFilt, setStatusFilt]= useState('')
   const [creating,   setCreating]  = useState(false)
-  const [form, setForm] = useState<NewCaseForm>({ title: '', description: '', priority: 'medium' })
+  const [form, setForm] = useState<NewCaseForm>({ title: '', description: '', priority: 'medium', template: '' })
 
   const { data: cases, isLoading, refetch } = useQuery({
     queryKey: ['cases'],
@@ -39,12 +40,20 @@ export default function Cases() {
     refetchInterval: 60_000,
   })
 
+  const { data: templates } = useQuery({
+    queryKey: ['case-templates'],
+    queryFn: () => api.listCaseTemplates().then((r) => r.data),
+    staleTime: Infinity,
+  })
+
+  const selectedTemplate = (templates || []).find((t: any) => t.key === form.template)
+
   const createMutation = useMutation({
-    mutationFn: (data: any) => api.createCase(data),
+    mutationFn: (data: any) => api.createCase({ ...data, template: data.template || null }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['cases'] })
       setCreating(false)
-      setForm({ title: '', description: '', priority: 'medium' })
+      setForm({ title: '', description: '', priority: 'medium', template: '' })
       toast.success('Case created')
     },
   })
@@ -142,6 +151,30 @@ export default function Cases() {
                 value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
               />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={{ fontSize: 11, color: 'var(--text-3)', display: 'block', marginBottom: 4 }}>Template (optional)</label>
+              <select
+                className="select"
+                style={{ width: '100%' }}
+                value={form.template}
+                onChange={(e) => setForm({ ...form, template: e.target.value })}
+              >
+                <option value="">No template — start blank</option>
+                {(templates || []).map((t: any) => (
+                  <option key={t.key} value={t.key}>{t.label} — {t.description}</option>
+                ))}
+              </select>
+              {selectedTemplate && (
+                <div style={{ marginTop: 8, padding: '8px 10px', background: 'var(--raise)', borderRadius: 6 }}>
+                  <p style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+                    Will create {selectedTemplate.tasks.length} tasks
+                  </p>
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: 'var(--text-2)' }}>
+                    {selectedTemplate.tasks.map((t: string) => <li key={t}>{t}</li>)}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>

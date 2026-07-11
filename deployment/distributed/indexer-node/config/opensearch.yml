@@ -1,0 +1,39 @@
+# Wazuh Indexer (OpenSearch) 4.14.5 — DISTRIBUTED cluster node
+# Identity and addresses come from env vars (set in .env):
+#   NODE_NAME, PUBLISH_HOST, SEED_HOSTS, INITIAL_MASTER_NODES
+# OpenSearch substitutes ${VAR} from the container environment.
+
+network.host: "0.0.0.0"
+network.publish_host: ${PUBLISH_HOST}
+node.name: ${NODE_NAME}
+cluster.name: socblitz-wazuh-indexer
+
+discovery.seed_hosts: ${SEED_HOSTS}
+cluster.initial_master_nodes: ${INITIAL_MASTER_NODES}
+
+plugins.security.ssl.http.pemcert_filepath:       /usr/share/wazuh-indexer/config/certs/node.pem
+plugins.security.ssl.http.pemkey_filepath:        /usr/share/wazuh-indexer/config/certs/node.key
+plugins.security.ssl.http.pemtrustedcas_filepath: /usr/share/wazuh-indexer/config/certs/root-ca.pem
+
+plugins.security.ssl.transport.pemcert_filepath:       /usr/share/wazuh-indexer/config/certs/node.pem
+plugins.security.ssl.transport.pemkey_filepath:        /usr/share/wazuh-indexer/config/certs/node.key
+plugins.security.ssl.transport.pemtrustedcas_filepath: /usr/share/wazuh-indexer/config/certs/root-ca.pem
+plugins.security.ssl.transport.enforce_hostname_verification: false
+
+plugins.security.ssl.http.enabled: true
+plugins.security.enable_snapshot_restore_privilege: true
+plugins.security.check_snapshot_restore_write_privileges: true
+
+plugins.security.authcz.admin_dn:
+  - "CN=admin,OU=Wazuh,O=Wazuh,L=California,C=US"
+
+# Every indexer node's cert CN must be listed here (transport-layer trust).
+# Add entries if you add indexer nodes beyond 3.
+plugins.security.nodes_dn:
+  - "CN=wazuh-indexer-1,OU=Wazuh,O=Wazuh,L=California,C=US"
+  - "CN=wazuh-indexer-2,OU=Wazuh,O=Wazuh,L=California,C=US"
+  - "CN=wazuh-indexer-3,OU=Wazuh,O=Wazuh,L=California,C=US"
+
+plugins.security.audit.type: internal_opensearch
+compatibility.override_main_response_version: true
+cluster.routing.allocation.disk.threshold_enabled: true

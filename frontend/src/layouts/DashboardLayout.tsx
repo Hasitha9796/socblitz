@@ -2,8 +2,8 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import {
   LayoutDashboard, Bell, FolderOpen, Monitor, Shield, Workflow,
-  Plug, Settings, LogOut, Zap, ChevronLeft, ChevronRight, User,
-  AlertTriangle, Activity, Sparkles
+  Plug, Settings, LogOut, ChevronLeft, ChevronRight, User,
+  AlertTriangle, Activity, Sparkles, Fingerprint
 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth'
 import { useQuery } from '@tanstack/react-query'
@@ -26,6 +26,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/cases',        icon: FolderOpen,      label: 'Cases'         },
       { to: '/threat-intel', icon: Shield,          label: 'Threat Intel'  },
+      { to: '/forensics',    icon: Fingerprint,     label: 'Forensics'     },
       { to: '/soar',         icon: Workflow,        label: 'SOAR'          },
     ],
   },
@@ -97,16 +98,15 @@ export default function DashboardLayout() {
           )}
           style={{ borderColor: 'var(--line)' }}
         >
-          <div
-            className="flex items-center justify-center rounded shrink-0"
+          <img
+            src="/logo.png"
+            alt="SocBlitz"
+            className="rounded shrink-0"
             style={{
               width: 30, height: 30,
-              background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
               boxShadow: '0 0 12px rgba(37,99,235,0.4)',
             }}
-          >
-            <Zap size={15} color="#fff" strokeWidth={2.5} />
-          </div>
+          />
           {open && (
             <div className="flex-1 min-w-0">
               <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)', letterSpacing: '-0.01em' }}>
@@ -156,18 +156,25 @@ export default function DashboardLayout() {
         <div style={{ borderTop: '1px solid var(--line)', padding: '10px 8px' }}>
           {open ? (
             <div className="flex items-center gap-2.5 px-2 py-1.5 rounded" style={{ background: 'rgba(96,130,182,0.06)' }}>
-              <div
-                className="flex items-center justify-center rounded-full shrink-0"
-                style={{ width: 28, height: 28, background: 'rgba(37,99,235,0.2)' }}
+              <button
+                onClick={() => navigate('/account')}
+                className="flex items-center gap-2.5 flex-1 min-w-0"
+                style={{ textAlign: 'left' }}
+                title="Account security"
               >
-                <User size={13} color="#60a5fa" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {fullName || 'Analyst'}
-                </p>
-                <p style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'capitalize' }}>{role}</p>
-              </div>
+                <div
+                  className="flex items-center justify-center rounded-full shrink-0"
+                  style={{ width: 28, height: 28, background: 'rgba(37,99,235,0.2)' }}
+                >
+                  <User size={13} color="#60a5fa" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {fullName || 'Analyst'}
+                  </p>
+                  <p style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'capitalize' }}>{role}</p>
+                </div>
+              </button>
               <button
                 onClick={handleLogout}
                 style={{ color: 'var(--text-3)', transition: 'color 0.12s' }}

@@ -1,0 +1,469 @@
+name: socblitz-multinode
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SocBlitz — MULTI-NODE deployment (single Docker host)
+#
+#   nginx LB (1514/1515)
+#     ├── wazuh-master        (enrollment, cluster coordination, REST API)
+#     ├── wazuh-worker-1..2   (agent event traffic)
+#     └── wazuh-indexer-1..3  (OpenSearch cluster, quorum of 3)
+#   + full SocBlitz app tier (backend, frontend, celery, postgres, redis,
+#     minio, misp, ollama, velociraptor)
+#
+# Capacity: up to ~3,000 endpoints on one large host
+#           (16+ vCPU, 64+ GB RAM, NVMe storage recommended).
+# Beyond that use deployment/distributed/.
+#
+# First time — from this directory:
+#   1. openssl rand -hex 16                      # generate a cluster key
+#      sed -i "s/CLUSTER_KEY_CHANGE_ME/<key>/" config/wazuh_cluster/*.conf
+#   2. docker compose -f generate-certs.yml run --rm generator
+#   3. cp .env.example .env   (set real secrets)
+#   4. docker compose up -d
+#
+# Agents enroll against THIS HOST's address, ports 1514/1515 (the LB).
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-manager-env: &manager-env
+  INDEXER_URL: https://wazuh-indexer-1:9200
+  INDEXER_USERNAME: admin
+  INDEXER_PASSWORD: ${WAZUH_INDEXER_PASSWORD:?set in .env}
+  API_USERNAME: wazuh-wui
+  API_PASSWORD: ${WAZUH_MANAGER_PASSWORD:?set in .env}
+  SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/root-ca.pem
+  SSL_CERTIFICATE: /etc/ssl/wazuh-manager.pem
+  SSL_KEY: /etc/ssl/wazuh-manager-key.pem
+
+x-manager-base: &manager-base
+  image: wazuh/wazuh-manager:4.14.5
+  restart: unless-stopped
+  ulimits:
+    memlock: { soft: -1, hard: -1 }
+    nofile:  { soft: 655360, hard: 655360 }
+  networks: [socblitz-net]
+  depends_on:
+    wazuh-indexer-1:
+      condition: service_healthy
+
+x-indexer-base: &indexer-base
+  image: wazuh/wazuh-indexer:4.14.5
+  restart: unless-stopped
+  ulimits:
+    memlock: { soft: -1, hard: -1 }
+    nofile:  { soft: 65536, hard: 65536 }
+  networks: [socblitz-net]
+
+services:
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  LOAD BALANCER — the only address agents ever see                        ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  wazuh-lb:
+    image: nginx:1.27-alpine
+    container_name: socblitz-wazuh-lb
+    restart: unless-stopped
+    ports:
+      - "1514:1514"      # agent events → workers
+      - "1515:1515"      # agent enrollment → master
+    volumes:
+      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks: [socblitz-net]
+    depends_on: [wazuh-master, wazuh-worker-1, wazuh-worker-2]
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  WAZUH MANAGER CLUSTER — 1 master + 2 workers                            ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  wazuh-master:
+    <<: *manager-base
+    hostname: wazuh-master
+    container_name: socblitz-wazuh-master
+    environment: *manager-env
+    ports:
+      - "55000:55000"    # Wazuh REST API (master only)
+      - "514:514/udp"    # syslog ingest
+    volumes:
+      - master-wazuh-api-config:/var/ossec/api/configuration
+      - master-wazuh-etc:/var/ossec/etc
+      - master-wazuh-logs:/var/ossec/logs
+      - master-wazuh-queue:/var/ossec/queue
+      - master-wazuh-var-multigroups:/var/ossec/var/multigroups
+      - master-wazuh-integrations:/var/ossec/integrations
+      - master-wazuh-active-response:/var/ossec/active-response/bin
+      - master-wazuh-agentless:/var/ossec/agentless
+      - master-wazuh-wodles:/var/ossec/wodles
+      - ./certs/root-ca.pem:/etc/ssl/root-ca.pem
+      - ./certs/wazuh-master.pem:/etc/ssl/wazuh-manager.pem
+      - ./certs/wazuh-master-key.pem:/etc/ssl/wazuh-manager-key.pem
+      - ./config/wazuh_cluster/master.conf:/wazuh-config-mount/etc/ossec.conf
+      # SOAR webhook integration script (custom-* integrations need it present)
+      - ./config/integrations/custom-socblitz:/var/ossec/integrations/custom-socblitz
+      - ./config/integrations/custom-socblitz.py:/var/ossec/integrations/custom-socblitz.py
+
+  wazuh-worker-1:
+    <<: *manager-base
+    hostname: wazuh-worker-1
+    container_name: socblitz-wazuh-worker-1
+    environment: *manager-env
+    volumes:
+      - worker1-wazuh-api-config:/var/ossec/api/configuration
+      - worker1-wazuh-etc:/var/ossec/etc
+      - worker1-wazuh-logs:/var/ossec/logs
+      - worker1-wazuh-queue:/var/ossec/queue
+      - worker1-wazuh-var-multigroups:/var/ossec/var/multigroups
+      - worker1-wazuh-integrations:/var/ossec/integrations
+      - worker1-wazuh-active-response:/var/ossec/active-response/bin
+      - worker1-wazuh-agentless:/var/ossec/agentless
+      - worker1-wazuh-wodles:/var/ossec/wodles
+      - ./certs/root-ca.pem:/etc/ssl/root-ca.pem
+      - ./certs/wazuh-worker-1.pem:/etc/ssl/wazuh-manager.pem
+      - ./certs/wazuh-worker-1-key.pem:/etc/ssl/wazuh-manager-key.pem
+      - ./config/wazuh_cluster/worker-1.conf:/wazuh-config-mount/etc/ossec.conf
+      # SOAR webhook integration script (custom-* integrations need it present)
+      - ./config/integrations/custom-socblitz:/var/ossec/integrations/custom-socblitz
+      - ./config/integrations/custom-socblitz.py:/var/ossec/integrations/custom-socblitz.py
+
+  wazuh-worker-2:
+    <<: *manager-base
+    hostname: wazuh-worker-2
+    container_name: socblitz-wazuh-worker-2
+    environment: *manager-env
+    volumes:
+      - worker2-wazuh-api-config:/var/ossec/api/configuration
+      - worker2-wazuh-etc:/var/ossec/etc
+      - worker2-wazuh-logs:/var/ossec/logs
+      - worker2-wazuh-queue:/var/ossec/queue
+      - worker2-wazuh-var-multigroups:/var/ossec/var/multigroups
+      - worker2-wazuh-integrations:/var/ossec/integrations
+      - worker2-wazuh-active-response:/var/ossec/active-response/bin
+      - worker2-wazuh-agentless:/var/ossec/agentless
+      - worker2-wazuh-wodles:/var/ossec/wodles
+      - ./certs/root-ca.pem:/etc/ssl/root-ca.pem
+      - ./certs/wazuh-worker-2.pem:/etc/ssl/wazuh-manager.pem
+      - ./certs/wazuh-worker-2-key.pem:/etc/ssl/wazuh-manager-key.pem
+      - ./config/wazuh_cluster/worker-2.conf:/wazuh-config-mount/etc/ossec.conf
+      # SOAR webhook integration script (custom-* integrations need it present)
+      - ./config/integrations/custom-socblitz:/var/ossec/integrations/custom-socblitz
+      - ./config/integrations/custom-socblitz.py:/var/ossec/integrations/custom-socblitz.py
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  WAZUH INDEXER CLUSTER — 3 nodes (quorum)                                ║
+  # ║  Heap via INDEXER_HEAP in .env — 50% of the RAM you give each node.      ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  wazuh-indexer-1:
+    <<: *indexer-base
+    hostname: wazuh-indexer-1
+    container_name: socblitz-wazuh-indexer-1
+    environment:
+      - NODE_NAME=wazuh-indexer-1
+      - SECURITY_INIT=yes                 # exactly ONE node runs securityadmin
+      - "OPENSEARCH_JAVA_OPTS=${INDEXER_HEAP:--Xms4g -Xmx4g}"
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD:?set in .env}
+    volumes:
+      - indexer1-data:/var/lib/wazuh-indexer
+      - ./certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem
+      - ./certs/wazuh-indexer-1.pem:/usr/share/wazuh-indexer/config/certs/node.pem
+      - ./certs/wazuh-indexer-1-key.pem:/usr/share/wazuh-indexer/config/certs/node.key
+      - ./certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem
+      - ./certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin.key
+      - ./config/wazuh_indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml
+      - ../../config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
+      - ./config/wazuh_indexer/entrypoint.sh:/entrypoint.sh
+    healthcheck: &indexer-health
+      test: ["CMD-SHELL", "curl -sk -u admin:${WAZUH_INDEXER_PASSWORD} https://localhost:9200/_cluster/health | grep -q 'green\\|yellow'"]
+      interval: 30s
+      timeout: 10s
+      retries: 15
+      start_period: 180s
+
+  wazuh-indexer-2:
+    <<: *indexer-base
+    hostname: wazuh-indexer-2
+    container_name: socblitz-wazuh-indexer-2
+    environment:
+      - NODE_NAME=wazuh-indexer-2
+      - "OPENSEARCH_JAVA_OPTS=${INDEXER_HEAP:--Xms4g -Xmx4g}"
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD:?set in .env}
+    volumes:
+      - indexer2-data:/var/lib/wazuh-indexer
+      - ./certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem
+      - ./certs/wazuh-indexer-2.pem:/usr/share/wazuh-indexer/config/certs/node.pem
+      - ./certs/wazuh-indexer-2-key.pem:/usr/share/wazuh-indexer/config/certs/node.key
+      - ./certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem
+      - ./certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin.key
+      - ./config/wazuh_indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml
+      - ../../config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
+      - ./config/wazuh_indexer/entrypoint.sh:/entrypoint.sh
+    healthcheck: *indexer-health
+
+  wazuh-indexer-3:
+    <<: *indexer-base
+    hostname: wazuh-indexer-3
+    container_name: socblitz-wazuh-indexer-3
+    environment:
+      - NODE_NAME=wazuh-indexer-3
+      - "OPENSEARCH_JAVA_OPTS=${INDEXER_HEAP:--Xms4g -Xmx4g}"
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD:?set in .env}
+    volumes:
+      - indexer3-data:/var/lib/wazuh-indexer
+      - ./certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem
+      - ./certs/wazuh-indexer-3.pem:/usr/share/wazuh-indexer/config/certs/node.pem
+      - ./certs/wazuh-indexer-3-key.pem:/usr/share/wazuh-indexer/config/certs/node.key
+      - ./certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem
+      - ./certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin.key
+      - ./config/wazuh_indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml
+      - ../../config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
+      - ./config/wazuh_indexer/entrypoint.sh:/entrypoint.sh
+    healthcheck: *indexer-health
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  SOCBLITZ APPLICATION TIER (identical to all-in-one)                     ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: socblitz-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-socblitz}
+      POSTGRES_USER:     ${POSTGRES_USER:-socblitz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-socblitz}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: socblitz-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set in .env} --maxmemory 1gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: socblitz-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER:-socblitz}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+    ports:
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks: [socblitz-net]
+
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: socblitz-backend
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      minio:    { condition: service_started }
+    volumes:
+      - ./data/logs:/app/logs
+      - ../../deployment:/app/deployment:ro
+      - velociraptor-data:/velociraptor-data:ro
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+    container_name: socblitz-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+      - "8443:443"
+    depends_on: [backend]
+    networks: [socblitz-net]
+
+  # No container_name so it can be scaled: docker compose up -d --scale worker=4
+  worker:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q default,integrations,alerts
+    env_file: .env
+    depends_on:
+      redis:    { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    networks: [socblitz-net]
+
+  beat:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: socblitz-beat
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info --schedule=/app/data/celery/celerybeat-schedule
+    env_file: .env
+    depends_on:
+      redis: { condition: service_healthy }
+    volumes:
+      - ./data/celery:/app/data/celery
+    networks: [socblitz-net]
+
+  misp-db:
+    image: mariadb:10.11
+    container_name: socblitz-misp-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE:      misp
+      MYSQL_USER:          misp
+      MYSQL_PASSWORD:      ${MISP_DB_PASSWORD:?set in .env}
+      MYSQL_ROOT_PASSWORD: ${MISP_DB_ROOT_PASSWORD:?set in .env}
+    volumes:
+      - misp-db-data:/var/lib/mysql
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  misp:
+    image: ghcr.io/misp/misp-docker/misp-core:latest
+    container_name: socblitz-misp
+    restart: unless-stopped
+    environment:
+      - MISP_BASEURL=https://localhost:8091
+      - MISP_ADMIN_EMAIL=${MISP_ADMIN_EMAIL:-admin@admin.test}
+      - MISP_ADMIN_PASSPHRASE=${MISP_ADMIN_PASSWORD:?set in .env}
+      - ADMIN_KEY=${MISP_API_KEY:?set in .env}
+      - MYSQL_HOST=misp-db
+      - MYSQL_DATABASE=misp
+      - MYSQL_USER=misp
+      - MYSQL_PASSWORD=${MISP_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MISP_DB_ROOT_PASSWORD}
+      - REDIS_FQDN=redis
+      - REDIS_DATABASE=2
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - "8090:80"
+      - "8091:443"
+    volumes:
+      - misp-data:/var/www/MISP
+    networks: [socblitz-net]
+    depends_on:
+      misp-db: { condition: service_healthy }
+      redis:   { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost/users/login -o /dev/null -w '%{http_code}' | grep -qE '200|302'"]
+      interval: 30s
+      timeout: 15s
+      retries: 20
+      start_period: 300s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: socblitz-ollama
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5; ollama pull ${OLLAMA_MODEL:-llama3.2:1b}; ollama pull ${OLLAMA_EMBED_MODEL:-nomic-embed-text}; wait"]
+    environment:
+      - OLLAMA_KEEP_ALIVE=30m
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  velociraptor:
+    image: wlambert/velociraptor:latest
+    container_name: socblitz-velociraptor
+    restart: unless-stopped
+    environment:
+      - VELOX_FRONTEND_HOSTNAME=velociraptor
+      - VELOX_SERVER_URL=https://velociraptor:8000/
+      - VELOX_USER=${VELOCIRAPTOR_USER:-admin}
+      - VELOX_PASSWORD=${VELOCIRAPTOR_PASSWORD:?set in .env}
+      - VELOX_ROLE=administrator
+    ports:
+      - "8889:8889"
+      - "8010:8000"
+    volumes:
+      - velociraptor-data:/velociraptor
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost:8889/ -o /dev/null -w '%{http_code}' | grep -qE '200|301|302|307|401'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  master-wazuh-api-config:
+  master-wazuh-etc:
+  master-wazuh-logs:
+  master-wazuh-queue:
+  master-wazuh-var-multigroups:
+  master-wazuh-integrations:
+  master-wazuh-active-response:
+  master-wazuh-agentless:
+  master-wazuh-wodles:
+  worker1-wazuh-api-config:
+  worker1-wazuh-etc:
+  worker1-wazuh-logs:
+  worker1-wazuh-queue:
+  worker1-wazuh-var-multigroups:
+  worker1-wazuh-integrations:
+  worker1-wazuh-active-response:
+  worker1-wazuh-agentless:
+  worker1-wazuh-wodles:
+  worker2-wazuh-api-config:
+  worker2-wazuh-etc:
+  worker2-wazuh-logs:
+  worker2-wazuh-queue:
+  worker2-wazuh-var-multigroups:
+  worker2-wazuh-integrations:
+  worker2-wazuh-active-response:
+  worker2-wazuh-agentless:
+  worker2-wazuh-wodles:
+  indexer1-data:
+  indexer2-data:
+  indexer3-data:
+  postgres-data:
+  redis-data:
+  minio-data:
+  misp-db-data:
+  misp-data:
+  ollama-data:
+  velociraptor-data:
+
+networks:
+  socblitz-net:
+    driver: bridge

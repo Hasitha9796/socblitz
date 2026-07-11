@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { RefreshCw, Search, Filter, CheckCircle } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { api } from '../stores/auth'
+import { TimeRangeFilter, rangeToParams, DEFAULT_RANGE, type TimeRange } from '../components/TimeRangeFilter'
 
 const LEVEL_BANDS = [
   { key: 'critical', label: 'Critical', min: 12, color: '#f43f5e' },
@@ -20,20 +21,28 @@ export default function Events() {
   const navigate = useNavigate()
   const [band, setBand] = useState('')
   const [search, setSearch] = useState('')
+  const [q, setQ] = useState('')
+  const [range, setRange] = useState<TimeRange>(DEFAULT_RANGE)
 
-  const { data: events, isLoading, refetch } = useQuery({
-    queryKey: ['events'],
-    queryFn: () => api.listEvents({ hours: 24, size: 300 }).then((r) => r.data),
+  // Debounce the query box → server-side Lucene query (query_string on OpenSearch).
+  useEffect(() => {
+    const t = setTimeout(() => setQ(search.trim()), 400)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const { data: events, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['events', range, q],
+    queryFn: () => api.listEvents({ ...rangeToParams(range), size: 500, ...(q ? { q } : {}) }).then((r) => r.data),
     refetchInterval: 20_000,
+    retry: false,
   })
+
+  const queryError = isError ? ((error as any)?.response?.data?.detail || 'Query failed') : null
 
   const withBand = (events || []).map((e: any) => ({ ...e, _band: bandFor(e.level).key }))
 
-  const filtered = withBand.filter((e: any) =>
-    (!band || e._band === band) &&
-    (!search || [e.description, e.agent_name, e.src_ip, e.full_log]
-      .some((f: any) => f?.toLowerCase().includes(search.toLowerCase())))
-  )
+  // `q` is applied server-side; only the level band is filtered client-side here.
+  const filtered = withBand.filter((e: any) => !band || e._band === band)
 
   const counts = LEVEL_BANDS.reduce((acc, b) => {
     acc[b.key] = withBand.filter((e: any) => e._band === b.key).length
@@ -48,10 +57,11 @@ export default function Events() {
         <div>
           <h1 className="page-title">Events</h1>
           <p className="page-sub">
-            Raw Wazuh alert stream — every rule level, last 24h ({filtered.length} of {events?.length ?? 0})
+            Raw Wazuh alert stream — every rule level ({filtered.length} of {events?.length ?? 0})
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <TimeRangeFilter value={range} onChange={setRange} />
           <button onClick={() => refetch()} className="btn-secondary">
             <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
             Refresh
@@ -99,13 +109,28 @@ export default function Events() {
           <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
           <input
             className="input"
-            style={{ paddingLeft: 30, width: 220, padding: '6px 10px 6px 30px' }}
-            placeholder="Search rules, agents, IPs, logs…"
+            style={{
+              paddingLeft: 30, width: 360, padding: '6px 10px 6px 30px',
+              fontFamily: 'JetBrains Mono,monospace', fontSize: 12,
+              outline: queryError ? '1px solid #f43f5e88' : undefined,
+            }}
+            placeholder="Lucene query — e.g. rule.level:>=10 AND agent.name:web-01"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            spellCheck={false}
           />
         </div>
       </div>
+
+      {queryError && (
+        <div style={{
+          fontSize: 12, color: '#f87171', padding: '8px 12px',
+          background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.2)',
+          borderRadius: 6, fontFamily: 'JetBrains Mono,monospace',
+        }}>
+          {queryError}
+        </div>
+      )}
 
       {/* ── Table ───────────────────────────────────────────────────── */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>

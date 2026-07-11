@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -6,6 +6,7 @@ import {
   Clock, Shield, AlertCircle, MessageSquare, ListChecks,
   Activity, Bell, UserPlus, UserMinus, PenSquare, Tag as TagIcon,
   HardDrive, Paperclip, StickyNote, FileDown, Target, Pencil, X,
+  Link2, Gavel,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { formatDistanceToNow } from 'date-fns'
@@ -19,6 +20,16 @@ const OBS_TYPES = ['ip', 'domain', 'hash', 'url', 'email']
 const TASK_STATUS_ORDER = ['to_do', 'in_progress', 'done']
 const TASK_STATUS_LABEL: Record<string, string> = { to_do: 'To do', in_progress: 'In progress', done: 'Done' }
 const VERDICT_COLOR: Record<string, string> = { malicious: '#f43f5e', clean: '#22c55e', unknown: '#94a3b8' }
+const CLASSIFICATION_OPTIONS = ['true_positive', 'false_positive', 'benign_positive', 'undetermined', 'security_testing', 'other']
+const CLASSIFICATION_LABEL: Record<string, string> = {
+  true_positive: 'True positive', false_positive: 'False positive', benign_positive: 'Benign positive',
+  undetermined: 'Undetermined', security_testing: 'Security testing', other: 'Other',
+}
+const CLASSIFICATION_COLOR: Record<string, string> = {
+  true_positive: '#f43f5e', false_positive: '#22c55e', benign_positive: '#67e8f9',
+  undetermined: '#94a3b8', security_testing: '#c084fc', other: '#94a3b8',
+}
+const CLOSING_STATUSES = ['resolved', 'closed']
 const TIMELINE_COLOR: Record<string, string> = {
   created: '#60a5fa', update: '#fbbf24', comment: '#67e8f9', observable: '#f87171',
   task: '#c084fc', manual: '#94a3b8', asset: '#fb923c', evidence: '#38bdf8', note: '#a3e635',
@@ -76,6 +87,21 @@ export default function CaseDetail() {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [editingNoteDraft, setEditingNoteDraft] = useState({ title: '', content: '' })
   const [downloading, setDownloading] = useState(false)
+
+  const [closingModal, setClosingModal] = useState<string | null>(null)   // pending status awaiting classification
+  const [classificationDraft, setClassificationDraft] = useState('true_positive')
+  const [closureNoteDraft, setClosureNoteDraft] = useState('')
+
+  const [editingObsId, setEditingObsId] = useState<string | null>(null)
+  const [editingObsDraft, setEditingObsDraft] = useState({ value: '', description: '' })
+  const [expandedObsId, setExpandedObsId] = useState<string | null>(null)
+  const [correlateResults, setCorrelateResults] = useState<Record<string, any[]>>({})
+
+  const [editingEvidenceId, setEditingEvidenceId] = useState<string | null>(null)
+  const [editingEvidenceDraft, setEditingEvidenceDraft] = useState({ filename: '', description: '', hash_sha256: '', custody_notes: '' })
+
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
+  const [editingCommentDraft, setEditingCommentDraft] = useState('')
 
   const { data: c, isLoading } = useQuery({
     queryKey: ['case', id],
@@ -154,6 +180,14 @@ export default function CaseDetail() {
     },
   })
 
+  const updateComment = useMutation({
+    mutationFn: ({ commentId, content }: any) => api.updateComment(id!, commentId, content),
+    onSuccess: () => {
+      setEditingCommentId(null)
+      qc.invalidateQueries({ queryKey: ['case-comments', id] })
+    },
+  })
+
   const addObservable = useMutation({
     mutationFn: () => api.addObservable(id!, { ...obsForm, asset_id: obsForm.asset_id || null }),
     onSuccess: () => {
@@ -164,9 +198,22 @@ export default function CaseDetail() {
     },
   })
 
+  const updateObservable = useMutation({
+    mutationFn: ({ obsId, data }: any) => api.updateObservable(id!, obsId, data),
+    onSuccess: () => {
+      setEditingObsId(null)
+      qc.invalidateQueries({ queryKey: ['case-observables', id] })
+    },
+  })
+
   const deleteObservable = useMutation({
     mutationFn: (obsId: string) => api.deleteObservable(id!, obsId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['case-observables', id] }),
+  })
+
+  const correlateObservable = useMutation({
+    mutationFn: (obsId: string) => api.correlateObservable(id!, obsId).then((r) => ({ obsId, data: r.data })),
+    onSuccess: ({ obsId, data }) => setCorrelateResults((prev) => ({ ...prev, [obsId]: data })),
   })
 
   const createTask = useMutation({
@@ -225,6 +272,14 @@ export default function CaseDetail() {
       setEvidenceForm({ filename: '', hash_sha256: '', description: '', custody_notes: '' })
       qc.invalidateQueries({ queryKey: ['case-evidence', id] })
       qc.invalidateQueries({ queryKey: ['case-timeline', id] })
+    },
+  })
+
+  const updateEvidence = useMutation({
+    mutationFn: ({ evidenceId, data }: any) => api.updateCaseEvidence(id!, evidenceId, data),
+    onSuccess: () => {
+      setEditingEvidenceId(null)
+      qc.invalidateQueries({ queryKey: ['case-evidence', id] })
     },
   })
 
@@ -327,7 +382,16 @@ export default function CaseDetail() {
               className="select"
               style={{ fontSize: 12, color: STATUS_COLOR[c.status] }}
               value={c.status}
-              onChange={(e) => updateCase.mutate({ status: e.target.value })}
+              onChange={(e) => {
+                const next = e.target.value
+                if (CLOSING_STATUSES.includes(next) && !c.classification) {
+                  setClassificationDraft('true_positive')
+                  setClosureNoteDraft('')
+                  setClosingModal(next)
+                } else {
+                  updateCase.mutate({ status: next })
+                }
+              }}
             >
               {STATUS_OPTIONS.map((s) => (
                 <option key={s} value={s}>{s.replace('_', ' ')}</option>
@@ -400,6 +464,14 @@ export default function CaseDetail() {
             </Meta>
           )}
 
+          {c.classification && (
+            <Meta label="Classification">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: CLASSIFICATION_COLOR[c.classification] }}>
+                <Gavel size={11} /> {CLASSIFICATION_LABEL[c.classification]}
+              </span>
+            </Meta>
+          )}
+
           {c.tags && c.tags.length > 0 && (
             <Meta label="Tags">
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -413,6 +485,64 @@ export default function CaseDetail() {
           )}
         </div>
       </div>
+
+      {/* ── Closing classification modal ── */}
+      {closingModal && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
+          }}
+          onClick={() => setClosingModal(null)}
+        >
+          <div
+            className="card"
+            style={{ padding: 20, width: 420, maxWidth: '90vw' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Gavel size={15} /> Classify before {closingModal === 'closed' ? 'closing' : 'resolving'}
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14 }}>
+              Every case needs a verdict when it's resolved or closed.
+            </p>
+            <label style={{ fontSize: 11, color: 'var(--text-3)', display: 'block', marginBottom: 4 }}>Classification</label>
+            <select
+              className="select"
+              style={{ width: '100%', marginBottom: 12, color: CLASSIFICATION_COLOR[classificationDraft] }}
+              value={classificationDraft}
+              onChange={(e) => setClassificationDraft(e.target.value)}
+            >
+              {CLASSIFICATION_OPTIONS.map((cl) => (
+                <option key={cl} value={cl}>{CLASSIFICATION_LABEL[cl]}</option>
+              ))}
+            </select>
+            <label style={{ fontSize: 11, color: 'var(--text-3)', display: 'block', marginBottom: 4 }}>Closure note (optional)</label>
+            <textarea
+              className="input"
+              style={{ width: '100%', minHeight: 70, resize: 'vertical', fontFamily: 'inherit', marginBottom: 14 }}
+              placeholder="Why this verdict — root cause, remediation taken, etc."
+              value={closureNoteDraft}
+              onChange={(e) => setClosureNoteDraft(e.target.value)}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn-ghost" onClick={() => setClosingModal(null)}>Cancel</button>
+              <button
+                className="btn-primary"
+                disabled={updateCase.isPending}
+                onClick={() => {
+                  updateCase.mutate(
+                    { status: closingModal, classification: classificationDraft, closure_note: closureNoteDraft || null },
+                    { onSuccess: () => setClosingModal(null) },
+                  )
+                }}
+              >
+                Confirm {closingModal === 'closed' ? 'close' : 'resolve'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Tabs ── */}
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -579,31 +709,110 @@ export default function CaseDetail() {
             <div className="tbl-wrap">
               <table className="tbl">
                 <thead>
-                  <tr><th>Type</th><th>Value</th><th>TLP</th><th>Asset</th><th>Verdict</th><th></th></tr>
+                  <tr><th>Type</th><th>Value</th><th>TLP</th><th>Asset</th><th>Verdict</th><th>Seen elsewhere</th><th></th></tr>
                 </thead>
                 <tbody>
                   {observables.map((o: any) => {
                     const verdict = o.enrichment?.verdict?.malicious ? 'malicious' : o.enrichment ? 'clean' : 'unknown'
+                    const isEditing = editingObsId === o.id
+                    const isExpanded = expandedObsId === o.id
                     return (
-                      <tr key={o.id}>
-                        <td style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-3)' }}>{o.obs_type}</td>
-                        <td style={{ fontSize: 12, fontFamily: 'JetBrains Mono,monospace', color: '#67e8f9' }}>{o.value}</td>
-                        <td>
-                          <span style={{ fontSize: 10, fontWeight: 600, color: TLP_COLOR[o.tlp] || 'var(--text-3)' }}>{o.tlp}</span>
-                        </td>
-                        <td style={{ fontSize: 11, color: 'var(--text-2)' }}>{o.asset_name || <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
-                        <td>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, textTransform: 'capitalize', color: VERDICT_COLOR[verdict] }}>
-                            <span style={{ width: 5, height: 5, borderRadius: '50%', background: VERDICT_COLOR[verdict] }} />
-                            {verdict}
-                          </span>
-                        </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 6px' }} onClick={() => deleteObservable.mutate(o.id)}>
-                            <Trash2 size={12} />
-                          </button>
-                        </td>
-                      </tr>
+                      <Fragment key={o.id}>
+                        <tr>
+                          <td style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-3)' }}>{o.obs_type}</td>
+                          {isEditing ? (
+                            <td colSpan={2}>
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <input
+                                  className="input"
+                                  style={{ fontSize: 12, flex: 1 }}
+                                  value={editingObsDraft.value}
+                                  onChange={(e) => setEditingObsDraft({ ...editingObsDraft, value: e.target.value })}
+                                />
+                              </div>
+                            </td>
+                          ) : (
+                            <>
+                              <td style={{ fontSize: 12, fontFamily: 'JetBrains Mono,monospace', color: '#67e8f9' }}>{o.value}</td>
+                              <td>
+                                <span style={{ fontSize: 10, fontWeight: 600, color: TLP_COLOR[o.tlp] || 'var(--text-3)' }}>{o.tlp}</span>
+                              </td>
+                            </>
+                          )}
+                          <td style={{ fontSize: 11, color: 'var(--text-2)' }}>{o.asset_name || <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                          <td>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, textTransform: 'capitalize', color: VERDICT_COLOR[verdict] }}>
+                              <span style={{ width: 5, height: 5, borderRadius: '50%', background: VERDICT_COLOR[verdict] }} />
+                              {verdict}
+                            </span>
+                          </td>
+                          <td>
+                            {o.correlated_count > 0 ? (
+                              <button
+                                className="btn-ghost"
+                                style={{ fontSize: 11, padding: '2px 8px', color: '#c084fc' }}
+                                onClick={() => {
+                                  if (isExpanded) { setExpandedObsId(null); return }
+                                  setExpandedObsId(o.id)
+                                  if (!correlateResults[o.id]) correlateObservable.mutate(o.id)
+                                }}
+                              >
+                                <Link2 size={11} /> {o.correlated_count} other case{o.correlated_count > 1 ? 's' : ''}
+                              </button>
+                            ) : <span style={{ color: 'var(--text-3)', fontSize: 11 }}>—</span>}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            {isEditing ? (
+                              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                                <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 6px' }} onClick={() => setEditingObsId(null)}>Cancel</button>
+                                <button
+                                  className="btn-primary"
+                                  style={{ fontSize: 11, padding: '3px 8px' }}
+                                  onClick={() => updateObservable.mutate({ obsId: o.id, data: { value: editingObsDraft.value } })}
+                                >
+                                  Save
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                                <button
+                                  className="btn-ghost"
+                                  style={{ fontSize: 11, padding: '3px 6px' }}
+                                  onClick={() => { setEditingObsId(o.id); setEditingObsDraft({ value: o.value, description: o.description || '' }) }}
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 6px' }} onClick={() => deleteObservable.mutate(o.id)}>
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr>
+                            <td colSpan={7} style={{ padding: '4px 10px 10px', background: 'var(--raise)' }}>
+                              {correlateObservable.isPending && !correlateResults[o.id] ? (
+                                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Looking up other cases…</span>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                  {(correlateResults[o.id] || []).map((cc: any) => (
+                                    <button
+                                      key={cc.case_id}
+                                      className="btn-ghost"
+                                      style={{ fontSize: 11, justifyContent: 'flex-start', padding: '4px 6px' }}
+                                      onClick={() => navigate(`/cases/${cc.case_id}`)}
+                                    >
+                                      #{cc.case_number} — {cc.title}
+                                      <span style={{ color: 'var(--text-3)', marginLeft: 6 }}>({cc.status})</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     )
                   })}
                 </tbody>
@@ -704,21 +913,84 @@ export default function CaseDetail() {
             <div className="tbl-wrap">
               <table className="tbl">
                 <thead>
-                  <tr><th>Filename</th><th>SHA256</th><th>Acquired by</th><th></th></tr>
+                  <tr><th>Filename</th><th>SHA256</th><th>Custody notes</th><th>Acquired by</th><th></th></tr>
                 </thead>
                 <tbody>
-                  {evidenceList.map((ev: any) => (
-                    <tr key={ev.id}>
-                      <td style={{ fontSize: 12, color: 'var(--text-1)' }}>{ev.filename}</td>
-                      <td style={{ fontSize: 11, fontFamily: 'JetBrains Mono,monospace', color: 'var(--text-2)' }}>{ev.hash_sha256 || '—'}</td>
-                      <td style={{ fontSize: 11, color: 'var(--text-3)' }}>{ev.acquired_by_name || '—'}</td>
-                      <td style={{ textAlign: 'right' }}>
-                        <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 6px' }} onClick={() => deleteEvidence.mutate(ev.id)}>
-                          <Trash2 size={12} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {evidenceList.map((ev: any) => {
+                    const isEditing = editingEvidenceId === ev.id
+                    return (
+                      <tr key={ev.id}>
+                        {isEditing ? (
+                          <>
+                            <td>
+                              <input
+                                className="input"
+                                style={{ fontSize: 12 }}
+                                value={editingEvidenceDraft.filename}
+                                onChange={(e) => setEditingEvidenceDraft({ ...editingEvidenceDraft, filename: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="input"
+                                style={{ fontSize: 11, fontFamily: 'JetBrains Mono,monospace' }}
+                                value={editingEvidenceDraft.hash_sha256}
+                                onChange={(e) => setEditingEvidenceDraft({ ...editingEvidenceDraft, hash_sha256: e.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="input"
+                                style={{ fontSize: 11 }}
+                                value={editingEvidenceDraft.custody_notes}
+                                onChange={(e) => setEditingEvidenceDraft({ ...editingEvidenceDraft, custody_notes: e.target.value })}
+                              />
+                            </td>
+                            <td style={{ fontSize: 11, color: 'var(--text-3)' }}>{ev.acquired_by_name || '—'}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                                <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 6px' }} onClick={() => setEditingEvidenceId(null)}>Cancel</button>
+                                <button
+                                  className="btn-primary"
+                                  style={{ fontSize: 11, padding: '3px 8px' }}
+                                  onClick={() => updateEvidence.mutate({ evidenceId: ev.id, data: editingEvidenceDraft })}
+                                >
+                                  Save
+                                </button>
+                              </div>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td style={{ fontSize: 12, color: 'var(--text-1)' }}>{ev.filename}</td>
+                            <td style={{ fontSize: 11, fontFamily: 'JetBrains Mono,monospace', color: 'var(--text-2)' }}>{ev.hash_sha256 || '—'}</td>
+                            <td style={{ fontSize: 11, color: 'var(--text-2)' }}>{ev.custody_notes || <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+                            <td style={{ fontSize: 11, color: 'var(--text-3)' }}>{ev.acquired_by_name || '—'}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                                <button
+                                  className="btn-ghost"
+                                  style={{ fontSize: 11, padding: '3px 6px' }}
+                                  onClick={() => {
+                                    setEditingEvidenceId(ev.id)
+                                    setEditingEvidenceDraft({
+                                      filename: ev.filename, description: ev.description || '',
+                                      hash_sha256: ev.hash_sha256 || '', custody_notes: ev.custody_notes || '',
+                                    })
+                                  }}
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 6px' }} onClick={() => deleteEvidence.mutate(ev.id)}>
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -889,12 +1161,43 @@ export default function CaseDetail() {
               <div key={cm.id} style={{ padding: '10px 12px', background: 'var(--raise)', borderRadius: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-1)' }}>{cm.author_name || 'Analyst'}</span>
-                  <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{formatDistanceToNow(new Date(cm.created_at), { addSuffix: true })}</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
+                    {formatDistanceToNow(new Date(cm.created_at), { addSuffix: true })}
+                    {cm.updated_at && cm.updated_at !== cm.created_at ? ' (edited)' : ''}
+                  </span>
                   {cm.is_internal && (
                     <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 3, background: 'rgba(168,85,247,0.12)', color: '#c084fc' }}>internal</span>
                   )}
+                  <button
+                    className="btn-ghost"
+                    style={{ fontSize: 11, padding: '2px 6px', marginLeft: 'auto' }}
+                    onClick={() => { setEditingCommentId(cm.id); setEditingCommentDraft(cm.content) }}
+                  >
+                    <Pencil size={11} />
+                  </button>
                 </div>
-                <p style={{ fontSize: 12, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>{cm.content}</p>
+                {editingCommentId === cm.id ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <textarea
+                      className="input"
+                      style={{ minHeight: 60, resize: 'vertical', fontFamily: 'inherit', fontSize: 12 }}
+                      value={editingCommentDraft}
+                      onChange={(e) => setEditingCommentDraft(e.target.value)}
+                    />
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button className="btn-ghost" style={{ fontSize: 11 }} onClick={() => setEditingCommentId(null)}>Cancel</button>
+                      <button
+                        className="btn-primary"
+                        style={{ fontSize: 11 }}
+                        onClick={() => updateComment.mutate({ commentId: cm.id, content: editingCommentDraft })}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p style={{ fontSize: 12, color: 'var(--text-2)', whiteSpace: 'pre-wrap' }}>{cm.content}</p>
+                )}
               </div>
             ))}
           </div>

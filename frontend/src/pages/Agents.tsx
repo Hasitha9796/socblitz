@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Monitor, RefreshCw, Search, CheckCircle, XCircle,
-  AlertTriangle, Clock, WifiOff
+  AlertTriangle, Clock, WifiOff, Plus, Copy, Terminal, X, Trash2
 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+import toast from 'react-hot-toast'
 import { api } from '../stores/auth'
 
 const STATUS_CONFIG: Record<string, { label: string; icon: any; color: string; bg: string }> = {
@@ -17,12 +18,29 @@ const STATUS_CONFIG: Record<string, { label: string; icon: any; color: string; b
 export default function Agents() {
   const [search,       setSearch]  = useState('')
   const [statusFilter, setStatus]  = useState('')
+  const [showAdd,      setShowAdd] = useState(false)
+  const qc = useQueryClient()
 
   const { data: agents, isLoading, refetch } = useQuery({
     queryKey: ['agents'],
     queryFn: () => api.listAgents({ limit: 500 }).then((r) => r.data),
     refetchInterval: 30_000,
   })
+
+  const removeMutation = useMutation({
+    mutationFn: (id: string) => api.deleteAgent(id),
+    onSuccess: (res: any) => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      toast.success(`Removed agent ${res?.data?.name || res?.data?.agent_id || ''}`.trim())
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.detail || 'Failed to remove agent'),
+  })
+
+  const confirmRemove = (a: any) => {
+    if (window.confirm(`Remove agent "${a.name || a.agent_id}" (ID ${a.agent_id}) from the manager?\n\nThis deregisters it — the endpoint will stop reporting until re-enrolled.`)) {
+      removeMutation.mutate(a.id)
+    }
+  }
 
   const filtered = (agents || []).filter((a: any) => {
     const matchSearch = !search ||
@@ -46,11 +64,18 @@ export default function Agents() {
           <h1 className="page-title">Agents</h1>
           <p className="page-sub">Endpoint sensors and monitoring status</p>
         </div>
-        <button className="btn-secondary" onClick={() => refetch()}>
-          <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="btn-primary" onClick={() => setShowAdd(true)}>
+            <Plus size={14} /> Add agent
+          </button>
+          <button className="btn-secondary" onClick={() => refetch()}>
+            <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
+
+      {showAdd && <AddAgentModal onClose={() => setShowAdd(false)} />}
 
       {/* ── Summary tiles ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
@@ -113,11 +138,12 @@ export default function Agents() {
                 <th>Version</th>
                 <th>Last seen</th>
                 <th>Group</th>
+                <th style={{ textAlign: 'right', paddingRight: 16 }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {isLoading && (
-                <tr><td colSpan={7}>
+                <tr><td colSpan={8}>
                   <div className="empty-state">
                     <RefreshCw size={16} className="animate-spin" style={{ color: 'var(--text-3)' }} />
                     <span>Loading agents…</span>
@@ -125,7 +151,7 @@ export default function Agents() {
                 </td></tr>
               )}
               {!isLoading && filtered.length === 0 && (
-                <tr><td colSpan={7}>
+                <tr><td colSpan={8}>
                   <div className="empty-state">
                     <Monitor size={18} style={{ color: 'var(--text-3)' }} />
                     <span>No agents found</span>
@@ -206,11 +232,142 @@ export default function Agents() {
                         </span>
                       ) : <span style={{ color: 'var(--text-3)' }}>—</span>}
                     </td>
+
+                    <td style={{ textAlign: 'right', paddingRight: 16 }}>
+                      {String(a.agent_id) === '000' ? (
+                        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Manager</span>
+                      ) : (
+                        <button
+                          className="btn-ghost"
+                          style={{ fontSize: 11, padding: '4px 10px', color: '#f87171' }}
+                          title="Deregister this agent from the manager"
+                          disabled={removeMutation.isPending}
+                          onClick={() => confirmRemove(a)}
+                        >
+                          <Trash2 size={12} /> Remove
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── Add agent modal ─────────────────────────────────────────────────────── */
+const OS_LABELS: Record<string, string> = { linux: 'Linux', macos: 'macOS', windows: 'Windows' }
+
+function AddAgentModal({ onClose }: { onClose: () => void }) {
+  const [os, setOs] = useState<'linux' | 'macos' | 'windows'>('linux')
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['agent-deploy-command'],
+    queryFn: () => api.agentDeployCommand().then((r) => r.data),
+  })
+
+  const command: string = data?.[os] || ''
+
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text)
+      .then(() => toast.success('Copied to clipboard'))
+      .catch(() => toast.error('Copy failed — select and copy manually'))
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 100,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="card"
+        style={{ width: 640, maxWidth: '100%', maxHeight: '90vh', overflow: 'auto', padding: 0 }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Terminal size={16} color="#60a5fa" />
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>Add an agent</span>
+          </div>
+          <button className="btn-ghost" style={{ padding: 4 }} onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            Run the command below <b>on the endpoint you want to onboard</b> — with
+            sudo (Linux/macOS) or in an elevated PowerShell (Windows). It installs the
+            SocBlitz agent, enrolls it with this server, and starts reporting. The new
+            agent appears in this list within a minute.
+            {os === 'macos' && (
+              <> <span style={{ color: 'var(--text-2)' }}>macOS installs the SIEM agent only
+              (forensics component is Linux/Windows).</span></>
+            )}
+          </p>
+
+          {/* OS selector */}
+          <div style={{ display: 'flex', gap: 4 }}>
+            {(['linux', 'macos', 'windows'] as const).map((k) => (
+              <button
+                key={k}
+                onClick={() => setOs(k)}
+                style={{
+                  padding: '5px 14px', borderRadius: 4, cursor: 'pointer', border: 'none',
+                  fontSize: 12, fontWeight: os === k ? 600 : 400,
+                  background: os === k ? 'rgba(37,99,235,0.2)' : 'rgba(96,130,182,0.08)',
+                  color: os === k ? '#60a5fa' : 'var(--text-3)',
+                  outline: os === k ? '1px solid rgba(37,99,235,0.35)' : '1px solid transparent',
+                }}
+              >
+                {OS_LABELS[k]}
+              </button>
+            ))}
+          </div>
+
+          {/* Command block */}
+          {isLoading ? (
+            <div className="empty-state"><RefreshCw size={16} className="animate-spin" style={{ color: 'var(--text-3)' }} /><span>Loading…</span></div>
+          ) : !data?.configured ? (
+            <div style={{
+              fontSize: 12, color: '#fbbf24', padding: '10px 12px',
+              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6,
+            }}>
+              {data?.hint || 'Agent enrollment is not configured. Set AGENT_ENROLL_KEY in .env and restart the backend.'}
+            </div>
+          ) : (
+            <div style={{ position: 'relative' }}>
+              <pre style={{
+                margin: 0, padding: '14px 44px 14px 14px', background: 'var(--raise)',
+                border: '1px solid var(--line)', borderRadius: 6, overflowX: 'auto',
+                fontFamily: 'JetBrains Mono,monospace', fontSize: 12, color: 'var(--text-1)',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+              }}>{command}</pre>
+              <button
+                className="btn-ghost"
+                style={{ position: 'absolute', top: 8, right: 8, padding: 5 }}
+                title="Copy command"
+                onClick={() => copy(command)}
+              >
+                <Copy size={14} />
+              </button>
+            </div>
+          )}
+
+          {data?.configured && (
+            <p style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              The endpoint must be able to reach this server on the enrollment port.
+              Firewalled hosts need outbound access to it. After install, use
+              <b> Refresh</b> to see the agent register.
+            </p>
+          )}
         </div>
       </div>
     </div>

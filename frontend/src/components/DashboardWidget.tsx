@@ -2,6 +2,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   PieChart, Pie, AreaChart, Area,
 } from 'recharts'
+import { Fragment } from 'react'
 import { X, CheckCircle } from 'lucide-react'
 
 function ChartTooltip({ active, payload, label }: any) {
@@ -96,6 +97,92 @@ function LineWidget({ widget }: { widget: any }) {
   )
 }
 
+function HistogramWidget({ widget }: { widget: any }) {
+  const color = widget.config?.color || '#fbbf24'
+  return (
+    <ResponsiveContainer width="100%" height={180}>
+      <BarChart data={widget.data} margin={{ left: -18, right: 8, top: 6, bottom: 0 }}>
+        <XAxis dataKey="name" tick={{ fill: 'var(--text-3)', fontSize: 10 }} axisLine={false} tickLine={false} />
+        <YAxis tick={{ fill: 'var(--text-3)', fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
+        <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(96,130,182,0.05)' }} />
+        <Bar dataKey="value" name={widget.config?.valueLabel || 'count'} radius={[3, 3, 0, 0]} fill={color} fillOpacity={0.85} />
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
+function GaugeWidget({ widget }: { widget: any }) {
+  const value = Number(widget.data) || 0
+  const min = widget.config?.min ?? 0
+  const max = widget.config?.max ?? 100
+  const pct = Math.min(1, Math.max(0, (value - min) / (max - min)))
+  const thresholds = widget.config?.thresholds || []
+  const color = thresholds.find((t: any) => value <= t.upto)?.color || '#60a5fa'
+  // Semicircle arc: radius 60, circumference of half-circle = PI * r
+  const r = 60
+  const half = Math.PI * r
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      <svg width={160} height={92} viewBox="0 0 160 92">
+        <path d={`M 20 86 A ${r} ${r} 0 0 1 140 86`} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={12} strokeLinecap="round" />
+        <path
+          d={`M 20 86 A ${r} ${r} 0 0 1 140 86`}
+          fill="none" stroke={color} strokeWidth={12} strokeLinecap="round"
+          strokeDasharray={`${half * pct} ${half}`}
+        />
+        <text x={80} y={78} textAnchor="middle" fill="var(--text-1)" fontSize={26} fontWeight={700} style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {value}{widget.config?.unit || ''}
+        </text>
+      </svg>
+      {widget.config?.detail && (
+        <p style={{ fontSize: 11, color: 'var(--text-3)' }}>{widget.config.detail}</p>
+      )}
+    </div>
+  )
+}
+
+function HeatmapWidget({ widget }: { widget: any }) {
+  const xLabels: (string | number)[] = widget.config?.xLabels || []
+  const yLabels: string[] = widget.config?.yLabels || []
+  const color = widget.config?.color || '#60a5fa'
+  const byCell: Record<string, number> = {}
+  let maxVal = 0
+  for (const d of widget.data) {
+    byCell[`${d.y}|${d.x}`] = d.value
+    if (d.value > maxVal) maxVal = d.value
+  }
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `36px repeat(${xLabels.length}, 1fr)`, gap: 2, minWidth: 420 }}>
+        <div />
+        {xLabels.map((x) => (
+          <div key={x} style={{ fontSize: 8, color: 'var(--text-3)', textAlign: 'center' }}>{x}</div>
+        ))}
+        {yLabels.map((y) => (
+          <Fragment key={y}>
+            <div style={{ fontSize: 10, color: 'var(--text-3)', display: 'flex', alignItems: 'center' }}>{y}</div>
+            {xLabels.map((x) => {
+              const v = byCell[`${y}|${x}`] || 0
+              const intensity = maxVal ? v / maxVal : 0
+              return (
+                <div
+                  key={`${y}-${x}`}
+                  title={`${y} ${x}:00 — ${v} events`}
+                  style={{
+                    aspectRatio: '1.4', borderRadius: 2, minHeight: 14,
+                    background: v ? color : 'rgba(255,255,255,0.03)',
+                    opacity: v ? 0.15 + intensity * 0.85 : 1,
+                  }}
+                />
+              )
+            })}
+          </Fragment>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function TableWidget({ widget }: { widget: any }) {
   const columns: string[] = widget.columns || Object.keys(widget.data[0] || {})
   return (
@@ -122,10 +209,13 @@ function WidgetBody({ widget }: { widget: any }) {
   if (widget.type === 'stat') {
     return <p style={{ fontSize: 32, fontWeight: 700, color: 'var(--text-1)', fontVariantNumeric: 'tabular-nums' }}>{widget.data ?? 0}</p>
   }
+  if (widget.type === 'gauge') return <GaugeWidget widget={widget} />
   if (!widget.data || widget.data.length === 0) return <EmptyWidget />
   if (widget.type === 'bar') return <BarWidget widget={widget} />
   if (widget.type === 'pie') return <PieWidget widget={widget} />
   if (widget.type === 'line') return <LineWidget widget={widget} />
+  if (widget.type === 'histogram') return <HistogramWidget widget={widget} />
+  if (widget.type === 'heatmap') return <HeatmapWidget widget={widget} />
   if (widget.type === 'table') return <TableWidget widget={widget} />
   return null
 }

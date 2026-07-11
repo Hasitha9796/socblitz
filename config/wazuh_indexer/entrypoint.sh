@@ -84,21 +84,48 @@ if [[ "$(id -u)" == "0" ]]; then
   fi
 fi
 
-# Run securityadmin.sh on first start to initialize .opendistro_security index.
-# The .flag file in the data volume prevents re-running on subsequent restarts.
-if [[ "$DISCOVERY" == "single-node" ]] && [[ ! -f "/var/lib/wazuh-indexer/.flag" ]]; then
+# Ensure the .opendistro_security index is initialized on every boot.
+#
+# We probe the LIVE cluster instead of trusting a .flag file. The old flag-only
+# guard was unsafe: if the flag persisted in the data volume but the security
+# index was actually absent (fresh/restored/wiped index), securityadmin was
+# skipped and security stayed permanently uninitialized. That made the
+# healthcheck fail forever (every dependent service hung on "waiting") AND
+# stopped filebeat from shipping alerts — i.e. "no new logs received".
+#
+# Unauthenticated GET /_cluster/health tells us the true state:
+#   * body "... not initialized" -> security index missing, run securityadmin
+#   * HTTP 401 / "Unauthorized"   -> already initialized, nothing to do
+# securityadmin is idempotent, so re-applying config is safe. The .flag is kept
+# only as a fast-path marker; it is never trusted to SKIP a needed init.
+if [[ "$DISCOVERY" == "single-node" ]]; then
   nohup bash -c "
-    sleep 30
-    JAVA_HOME=/usr/share/wazuh-indexer/jdk \
-    /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh \
-      -cd /usr/share/wazuh-indexer/config/opensearch-security/ \
-      -nhnv \
-      -cacert ${CACERT} \
-      -cert ${CERT} \
-      -key ${KEY} \
-      -p 9200 -icl
+    for attempt in \$(seq 1 30); do
+      sleep 15
+      probe=\$(curl -sk https://localhost:9200/_cluster/health 2>/dev/null || true)
+      if echo \"\$probe\" | grep -qiE 'unauthorized|\"status\":401'; then
+        touch /var/lib/wazuh-indexer/.flag
+        echo \"security already initialized (attempt \$attempt)\"
+        break
+      fi
+      if echo \"\$probe\" | grep -qi 'not initialized'; then
+        if JAVA_HOME=/usr/share/wazuh-indexer/jdk \
+          /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh \
+            -cd /usr/share/wazuh-indexer/config/opensearch-security/ \
+            -nhnv \
+            -cacert ${CACERT} \
+            -cert ${CERT} \
+            -key ${KEY} \
+            -p 9200 -icl; then
+          touch /var/lib/wazuh-indexer/.flag
+          echo \"securityadmin succeeded on attempt \$attempt\"
+          break
+        fi
+        echo \"securityadmin attempt \$attempt failed, retrying\"
+      fi
+      # else: node not reachable yet (still starting) — keep waiting
+    done
   " &>/var/log/wazuh-indexer/securityadmin.log &
-  touch "/var/lib/wazuh-indexer/.flag"
 fi
 
 run_as_other_user_if_needed /usr/share/wazuh-indexer/bin/opensearch <<<"$KEYSTORE_PASSWORD"

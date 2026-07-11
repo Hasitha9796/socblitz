@@ -1,0 +1,236 @@
+name: socblitz-app
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SocBlitz DISTRIBUTED — application tier (one host)
+# Everything EXCEPT Wazuh: backend, frontend, celery, postgres, redis, minio,
+# misp, ollama, velociraptor. Talks to the external Wazuh cluster via
+# WAZUH_MANAGER_URL / WAZUH_INDEXER_URL in .env.
+#
+#   1. cp .env.example .env  → set secrets + Wazuh cluster addresses
+#   2. docker compose up -d --build
+#   3. scale celery when needed: docker compose up -d --scale worker=4
+#
+# Run this from a full checkout of the socblitz repo (build contexts point
+# at ../../../backend and ../../../frontend).
+#
+# At 10k+ endpoints move Velociraptor to its own host (it is its own
+# server product with real load) — copy the velociraptor service out.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: socblitz-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-socblitz}
+      POSTGRES_USER:     ${POSTGRES_USER:-socblitz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-socblitz}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: socblitz-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set in .env} --maxmemory 1gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: socblitz-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER:-socblitz}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+    ports:
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks: [socblitz-net]
+
+  backend:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile
+    container_name: socblitz-backend
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5000:5000"      # Wazuh manager/worker webhooks POST here
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      minio:    { condition: service_started }
+    volumes:
+      - ./data/logs:/app/logs
+      - ../../../deployment:/app/deployment:ro
+      - velociraptor-data:/velociraptor-data:ro
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ../../../frontend
+      dockerfile: Dockerfile
+    container_name: socblitz-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+      - "8443:443"
+    depends_on: [backend]
+    networks: [socblitz-net]
+
+  # No container_name — scalable: docker compose up -d --scale worker=4
+  worker:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q default,integrations,alerts
+    env_file: .env
+    depends_on:
+      redis:    { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    networks: [socblitz-net]
+
+  beat:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile
+    container_name: socblitz-beat
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info --schedule=/app/data/celery/celerybeat-schedule
+    env_file: .env
+    depends_on:
+      redis: { condition: service_healthy }
+    volumes:
+      - ./data/celery:/app/data/celery
+    networks: [socblitz-net]
+
+  misp-db:
+    image: mariadb:10.11
+    container_name: socblitz-misp-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE:      misp
+      MYSQL_USER:          misp
+      MYSQL_PASSWORD:      ${MISP_DB_PASSWORD:?set in .env}
+      MYSQL_ROOT_PASSWORD: ${MISP_DB_ROOT_PASSWORD:?set in .env}
+    volumes:
+      - misp-db-data:/var/lib/mysql
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  misp:
+    image: ghcr.io/misp/misp-docker/misp-core:latest
+    container_name: socblitz-misp
+    restart: unless-stopped
+    environment:
+      - MISP_BASEURL=https://localhost:8091
+      - MISP_ADMIN_EMAIL=${MISP_ADMIN_EMAIL:-admin@admin.test}
+      - MISP_ADMIN_PASSPHRASE=${MISP_ADMIN_PASSWORD:?set in .env}
+      - ADMIN_KEY=${MISP_API_KEY:?set in .env}
+      - MYSQL_HOST=misp-db
+      - MYSQL_DATABASE=misp
+      - MYSQL_USER=misp
+      - MYSQL_PASSWORD=${MISP_DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MISP_DB_ROOT_PASSWORD}
+      - REDIS_FQDN=redis
+      - REDIS_DATABASE=2
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - "8090:80"
+      - "8091:443"
+    volumes:
+      - misp-data:/var/www/MISP
+    networks: [socblitz-net]
+    depends_on:
+      misp-db: { condition: service_healthy }
+      redis:   { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost/users/login -o /dev/null -w '%{http_code}' | grep -qE '200|302'"]
+      interval: 30s
+      timeout: 15s
+      retries: 20
+      start_period: 300s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: socblitz-ollama
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5; ollama pull ${OLLAMA_MODEL:-llama3.2:1b}; ollama pull ${OLLAMA_EMBED_MODEL:-nomic-embed-text}; wait"]
+    environment:
+      - OLLAMA_KEEP_ALIVE=30m
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  velociraptor:
+    image: wlambert/velociraptor:latest
+    container_name: socblitz-velociraptor
+    restart: unless-stopped
+    environment:
+      - VELOX_FRONTEND_HOSTNAME=velociraptor
+      - VELOX_SERVER_URL=https://velociraptor:8000/
+      - VELOX_USER=${VELOCIRAPTOR_USER:-admin}
+      - VELOX_PASSWORD=${VELOCIRAPTOR_PASSWORD:?set in .env}
+      - VELOX_ROLE=administrator
+    ports:
+      - "8889:8889"
+      - "8010:8000"
+    volumes:
+      - velociraptor-data:/velociraptor
+    networks: [socblitz-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost:8889/ -o /dev/null -w '%{http_code}' | grep -qE '200|301|302|307|401'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  misp-db-data:
+  misp-data:
+  ollama-data:
+  velociraptor-data:
+
+networks:
+  socblitz-net:
+    driver: bridge

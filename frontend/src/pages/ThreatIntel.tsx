@@ -118,12 +118,14 @@ export default function ThreatIntel() {
 
         {/* Result */}
         {result && (() => {
-          const verdictLabel = !result.sources
-            ? 'unknown'
-            : result.verdict?.malicious ? 'malicious' : 'clean'
+          const verdictLabel = result.verdict?.status
+            ?? (!result.sources
+              ? 'unknown'
+              : result.verdict?.malicious ? 'malicious' : 'clean')
           const confidence: number | null = result.verdict?.confidence ?? null
           const reasons: string[] = result.verdict?.reasons ?? []
           const sources: Record<string, any> = result.sources ?? {}
+          const skipped: string[] = result.skipped ?? []
 
           return (
             <div
@@ -173,6 +175,18 @@ export default function ThreatIntel() {
                 <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-3)' }}>{result.note}</p>
               )}
 
+              {verdictLabel === 'unknown' && (
+                <p style={{ marginTop: 12, fontSize: 12, color: '#f97316' }}>
+                  No configured intel source had data on this IOC — this is not a clean verdict.
+                </p>
+              )}
+
+              {skipped.length > 0 && (
+                <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+                  Not checked (no API key configured): {skipped.join(', ')}
+                </p>
+              )}
+
               {reasons.length > 0 && (
                 <div style={{ marginTop: 12, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                   {reasons.map((reason: string) => (
@@ -192,23 +206,49 @@ export default function ThreatIntel() {
               )}
 
               {Object.keys(sources).length > 0 && (
-                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {Object.entries(sources).map(([name, data]) => (
-                    <div
-                      key={name}
-                      style={{
-                        display: 'flex', alignItems: 'baseline', gap: 8,
-                        fontSize: 11, color: 'var(--text-3)',
-                      }}
-                    >
-                      <span style={{ fontWeight: 600, textTransform: 'capitalize', color: 'var(--text-2)', minWidth: 90 }}>
-                        {name}
-                      </span>
-                      <span style={{ fontFamily: 'JetBrains Mono,monospace', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {data?.error ? `Error: ${data.error}` : JSON.stringify(data)}
-                      </span>
-                    </div>
-                  ))}
+                <div className="tbl-wrap" style={{ marginTop: 12 }}>
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th style={{ width: 110 }}>Source</th>
+                        <th style={{ width: 160 }}>Field</th>
+                        <th>Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(sources).flatMap(([name, data]) => {
+                        const rows: [string, any][] = data?.error
+                          ? [['error', data.error]]
+                          : Object.entries(data ?? {})
+                        if (rows.length === 0) rows.push(['—', '—'])
+                        return rows.map(([field, value], idx) => (
+                          <tr key={`${name}-${field}`}>
+                            {idx === 0 && (
+                              <td
+                                rowSpan={rows.length}
+                                style={{
+                                  fontSize: 12, fontWeight: 600, textTransform: 'capitalize',
+                                  color: 'var(--text-2)', verticalAlign: 'top',
+                                }}
+                              >
+                                {name}
+                              </td>
+                            )}
+                            <td style={{ fontSize: 12, color: 'var(--text-2)' }}>{field}</td>
+                            <td
+                              style={{
+                                fontSize: 12, fontFamily: 'JetBrains Mono,monospace',
+                                color: field === 'error' ? '#f87171' : 'var(--text-1)',
+                                wordBreak: 'break-word',
+                              }}
+                            >
+                              {formatValue(value)}
+                            </td>
+                          </tr>
+                        ))
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -260,6 +300,19 @@ export default function ThreatIntel() {
       )}
     </div>
   )
+}
+
+function formatValue(v: any): string {
+  if (v === null || v === undefined || v === '') return '—'
+  if (typeof v === 'boolean') return v ? 'yes' : 'no'
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '—'
+    return v.every((x) => typeof x !== 'object')
+      ? v.join(', ')
+      : `${v.length} item${v.length === 1 ? '' : 's'}`
+  }
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
 }
 
 function Field({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

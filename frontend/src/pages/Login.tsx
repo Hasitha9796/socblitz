@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, Mail, Lock, Loader2, ArrowRight } from 'lucide-react'
+import { Mail, Lock, Loader2, ArrowRight, ShieldCheck, KeyRound, ArrowLeft } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuthStore, api } from '../stores/auth'
 
@@ -33,17 +33,69 @@ export default function Login() {
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading]   = useState(false)
+  const [mfaToken, setMfaToken] = useState<string | null>(null)
+  const [code, setCode]         = useState('')
+
+  function finishLogin(data: any) {
+    setAuth(data.access_token, data.user_id, data.role, data.full_name || email)
+    toast.success('Authenticated')
+    navigate('/dashboard')
+  }
+
+  function loginErrorMessage(err: any): string {
+    if (err?.code === 'ECONNABORTED') {
+      return 'Server did not respond within 15 seconds — it may still be starting up, try again shortly'
+    }
+    if (!err?.response) {
+      return 'Cannot reach the server — check that the backend is running and try again'
+    }
+    const { status, data } = err.response
+    // FastAPI puts human-readable errors in `detail`; on 422 it's an array
+    // of field errors instead, handled by the status branches below.
+    const detail = typeof data?.detail === 'string' ? data.detail : ''
+    if (status === 401) {
+      const hint = email.includes('@') ? '' : ' — sign in with your full email address'
+      return (detail || 'Incorrect email or password') + hint
+    }
+    if (detail) return detail
+    if (status === 422) return 'Enter both your email address and password'
+    if (status === 429) return 'Too many attempts — wait a few minutes and try again'
+    if (status >= 500) return `Server error (HTTP ${status}) — try again or check the backend logs`
+    return `Sign-in failed (HTTP ${status})`
+  }
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     try {
       const { data } = await api.login(email, password)
-      setAuth(data.access_token, data.user_id, data.role, data.full_name || email)
-      toast.success('Authenticated')
-      navigate('/dashboard')
-    } catch {
-      toast.error('Invalid credentials')
+      if (data.mfa_required) {
+        setMfaToken(data.mfa_token)
+        setCode('')
+      } else {
+        finishLogin(data)
+      }
+    } catch (err: any) {
+      toast.error(loginErrorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleMfaVerify(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      const { data } = await api.mfaVerify(mfaToken!, code)
+      finishLogin(data)
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || ''
+      if (detail.includes('sign in again')) {
+        toast.error('Session expired — sign in again')
+        setMfaToken(null)
+      } else {
+        toast.error(detail || 'Invalid verification code')
+      }
     } finally {
       setLoading(false)
     }
@@ -66,17 +118,15 @@ export default function Login() {
       >
         {/* Brand mark */}
         <div className="flex items-center gap-3">
-          <div
+          <img
+            src="/logo.png"
+            alt="SocBlitz"
             style={{
               width: 36, height: 36,
-              background: 'linear-gradient(135deg, #1d4ed8, #2563eb)',
               borderRadius: 8,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
               boxShadow: '0 0 16px rgba(37,99,235,0.4)',
             }}
-          >
-            <Zap size={18} color="#fff" strokeWidth={2.5} />
-          </div>
+          />
           <div>
             <p style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-1)', letterSpacing: '-0.01em' }}>SocBlitz</p>
             <p style={{ fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Security Operations</p>
@@ -146,93 +196,160 @@ export default function Login() {
 
           {/* Mobile brand */}
           <div className="lg:hidden flex items-center gap-2 mb-8">
-            <div
-              style={{
-                width: 32, height: 32,
-                background: 'linear-gradient(135deg, #1d4ed8, #2563eb)',
-                borderRadius: 7,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}
-            >
-              <Zap size={16} color="#fff" strokeWidth={2.5} />
-            </div>
+            <img
+              src="/logo.png"
+              alt="SocBlitz"
+              style={{ width: 32, height: 32, borderRadius: 7 }}
+            />
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-1)' }}>SocBlitz</span>
           </div>
 
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-1)', letterSpacing: '-0.02em', marginBottom: 6 }}>
-            Sign in
-          </h1>
-          <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 28 }}>
-            Access your security operations centre
-          </p>
-
-          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--text-3)', marginBottom: 6 }}>
-                Email address
-              </label>
-              <div style={{ position: 'relative' }}>
-                <Mail size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
-                <input
-                  className="input"
-                  style={{ paddingLeft: 36 }}
-                  type="email"
-                  placeholder="analyst@yourorg.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  autoFocus
-                />
+          {mfaToken ? (
+            <>
+              <div
+                className="flex items-center justify-center"
+                style={{
+                  width: 44, height: 44, borderRadius: 10, marginBottom: 18,
+                  background: 'rgba(37,99,235,0.12)', border: '1px solid rgba(37,99,235,0.25)',
+                }}
+              >
+                <ShieldCheck size={20} color="#60a5fa" />
               </div>
-            </div>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-1)', letterSpacing: '-0.02em', marginBottom: 6 }}>
+                Two-factor authentication
+              </h1>
+              <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 28 }}>
+                Enter the 6-digit code from your authenticator app, or a backup code
+              </p>
 
-            <div>
-              <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--text-3)', marginBottom: 6 }}>
-                Password
-              </label>
-              <div style={{ position: 'relative' }}>
-                <Lock size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
-                <input
-                  className="input"
-                  style={{ paddingLeft: 36 }}
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
+              <form onSubmit={handleMfaVerify} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--text-3)', marginBottom: 6 }}>
+                    Verification code
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <KeyRound size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
+                    <input
+                      className="input"
+                      style={{ paddingLeft: 36, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.15em' }}
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      placeholder="123456"
+                      value={code}
+                      onChange={(e) => setCode(e.target.value)}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn-primary"
-              style={{ width: '100%', justifyContent: 'center', padding: '10px 16px', marginTop: 6, fontSize: 14 }}
+                <button
+                  type="submit"
+                  disabled={loading || !code.trim()}
+                  className="btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '10px 16px', marginTop: 6, fontSize: 14 }}
+                >
+                  {loading ? (
+                    <><Loader2 size={15} className="animate-spin" /> Verifying…</>
+                  ) : (
+                    <>Verify <ArrowRight size={15} /></>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setMfaToken(null); setCode('') }}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    fontSize: 12, color: 'var(--text-3)', background: 'none', border: 'none',
+                    cursor: 'pointer', padding: '6px 0',
+                  }}
+                >
+                  <ArrowLeft size={12} /> Back to sign in
+                </button>
+              </form>
+            </>
+          ) : (
+            <>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-1)', letterSpacing: '-0.02em', marginBottom: 6 }}>
+                Sign in
+              </h1>
+              <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 28 }}>
+                Access your security operations centre
+              </p>
+
+              <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--text-3)', marginBottom: 6 }}>
+                    Email address
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <Mail size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
+                    <input
+                      className="input"
+                      style={{ paddingLeft: 36 }}
+                      type="email"
+                      placeholder="analyst@yourorg.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--text-3)', marginBottom: 6 }}>
+                    Password
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <Lock size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
+                    <input
+                      className="input"
+                      style={{ paddingLeft: 36 }}
+                      type="password"
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '10px 16px', marginTop: 6, fontSize: 14 }}
+                >
+                  {loading ? (
+                    <><Loader2 size={15} className="animate-spin" /> Authenticating…</>
+                  ) : (
+                    <>Sign in <ArrowRight size={15} /></>
+                  )}
+                </button>
+              </form>
+            </>
+          )}
+
+          {!mfaToken && (
+            <div
+              style={{
+                marginTop: 24,
+                padding: '12px 14px',
+                background: 'rgba(37,99,235,0.06)',
+                border: '1px solid rgba(37,99,235,0.15)',
+                borderRadius: 6,
+                fontSize: 11,
+                color: 'var(--text-3)',
+                lineHeight: 1.6,
+              }}
             >
-              {loading ? (
-                <><Loader2 size={15} className="animate-spin" /> Authenticating…</>
-              ) : (
-                <>Sign in <ArrowRight size={15} /></>
-              )}
-            </button>
-          </form>
-
-          <div
-            style={{
-              marginTop: 24,
-              padding: '12px 14px',
-              background: 'rgba(37,99,235,0.06)',
-              border: '1px solid rgba(37,99,235,0.15)',
-              borderRadius: 6,
-              fontSize: 11,
-              color: 'var(--text-3)',
-              lineHeight: 1.6,
-            }}
-          >
-            <strong style={{ color: 'var(--text-2)' }}>Default credentials</strong><br />
-            admin@socblitz.local / SocBlitz@Admin1!
-          </div>
+              <strong style={{ color: 'var(--text-2)' }}>First sign-in</strong><br />
+              Use the admin email and password set via <code>FIRST_ADMIN_EMAIL</code> / <code>FIRST_ADMIN_PASSWORD</code> in your deployment&rsquo;s <code>.env</code>.
+            </div>
+          )}
 
           <p style={{ marginTop: 20, textAlign: 'center', fontSize: 11, color: 'var(--text-3)' }}>
             SocBlitz v1.0.0 · Open-source SOC platform

@@ -68,6 +68,15 @@ class CasePriority(str, Enum):
     LOW      = "low"
 
 
+class CaseClassification(str, Enum):
+    TRUE_POSITIVE    = "true_positive"
+    FALSE_POSITIVE   = "false_positive"
+    BENIGN_POSITIVE  = "benign_positive"
+    UNDETERMINED     = "undetermined"
+    SECURITY_TESTING = "security_testing"
+    OTHER            = "other"
+
+
 class ConnectorType(str, Enum):
     WAZUH_MANAGER    = "wazuh_manager"
     WAZUH_INDEXER    = "wazuh_indexer"
@@ -169,6 +178,9 @@ class User(Base):
     tenant_id:      Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), index=True)
     is_active:      Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified:    Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_enabled:    Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    totp_secret:    Mapped[str | None] = mapped_column(String(64))
+    mfa_backup_codes: Mapped[list | None] = mapped_column(JSONB)    # sha256-hashed, one-time use
     last_login:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     preferences:    Mapped[dict | None] = mapped_column(JSONB)
     created_at:     Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -278,6 +290,8 @@ class Case(Base):
     description: Mapped[str | None] = mapped_column(Text)
     status:      Mapped[CaseStatus]   = mapped_column(SAEnum(CaseStatus),   default=CaseStatus.OPEN,   index=True)
     priority:    Mapped[CasePriority] = mapped_column(SAEnum(CasePriority), default=CasePriority.MEDIUM)
+    classification: Mapped[CaseClassification | None] = mapped_column(SAEnum(CaseClassification))
+    closure_note:   Mapped[str | None] = mapped_column(Text)
     tags:        Mapped[list | None]  = mapped_column(JSONB)
     assigned_to: Mapped[str | None]   = mapped_column(ForeignKey("users.id"))
     created_by:  Mapped[str | None]   = mapped_column(ForeignKey("users.id"))
@@ -309,6 +323,7 @@ class CaseComment(Base):
     content:    Mapped[str] = mapped_column(Text, nullable=False)
     is_internal:Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     case: Mapped["Case"] = relationship("Case", back_populates="comments")
 
@@ -327,6 +342,7 @@ class Observable(Base):
     enrichment:  Mapped[dict | None] = mapped_column(JSONB)
     asset_id:    Mapped[str | None] = mapped_column(ForeignKey("case_assets.id", ondelete="SET NULL"), index=True)
     created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     case: Mapped["Case"] = relationship("Case", back_populates="observables")
 
@@ -384,6 +400,7 @@ class CaseEvidence(Base):
     acquired_by:   Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     acquired_at:   Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=utcnow)
     created_at:    Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:    Mapped[datetime]   = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     case: Mapped["Case"] = relationship("Case", back_populates="evidence")
 

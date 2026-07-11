@@ -1,0 +1,68 @@
+name: socblitz-wazuh-master
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SocBlitz DISTRIBUTED — Wazuh MASTER node (one host)
+#
+#   1. Edit config/master.conf — replace {{...}} placeholders and cluster key:
+#        sed -i "s/{{INDEXER_1_IP}}/10.0.0.11/; s/{{INDEXER_2_IP}}/10.0.0.12/; \
+#                s/{{INDEXER_3_IP}}/10.0.0.13/; s/{{APP_TIER_IP}}/10.0.0.30/; \
+#                s/{{MASTER_IP}}/10.0.0.21/; \
+#                s/CLUSTER_KEY_CHANGE_ME/<openssl rand -hex 16>/" config/master.conf
+#   2. Place certs in ./certs/: root-ca.pem, node.pem, node-key.pem
+#      (node.pem = wazuh-master.pem from the cert bundle)
+#   3. cp .env.example .env  → set passwords
+#   4. docker compose up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  wazuh-master:
+    image: wazuh/wazuh-manager:4.14.5
+    hostname: wazuh-master
+    container_name: socblitz-wazuh-master
+    restart: unless-stopped
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 655360, hard: 655360 }
+    ports:
+      - "1514:1514"      # direct agent events (optional; LB targets workers)
+      - "1515:1515"      # enrollment (LB forwards here)
+      - "1516:1516"      # cluster port — workers connect here
+      - "55000:55000"    # Wazuh REST API (SocBlitz backend talks to this)
+      - "514:514/udp"    # syslog ingest
+    environment:
+      - INDEXER_URL=https://${INDEXER_1_IP:?set in .env}:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD:?set in .env}
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=${WAZUH_MANAGER_PASSWORD:?set in .env}
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/wazuh-manager.pem
+      - SSL_KEY=/etc/ssl/wazuh-manager-key.pem
+    volumes:
+      - wazuh-api-config:/var/ossec/api/configuration
+      - wazuh-etc:/var/ossec/etc
+      - wazuh-logs:/var/ossec/logs
+      - wazuh-queue:/var/ossec/queue
+      - wazuh-var-multigroups:/var/ossec/var/multigroups
+      - wazuh-integrations:/var/ossec/integrations
+      - wazuh-active-response:/var/ossec/active-response/bin
+      - wazuh-agentless:/var/ossec/agentless
+      - wazuh-wodles:/var/ossec/wodles
+      - ./certs/root-ca.pem:/etc/ssl/root-ca.pem
+      - ./certs/node.pem:/etc/ssl/wazuh-manager.pem
+      - ./certs/node-key.pem:/etc/ssl/wazuh-manager-key.pem
+      - ./config/master.conf:/wazuh-config-mount/etc/ossec.conf
+      # SOAR webhook integration script (custom-* integrations need it present)
+      - ./config/integrations/custom-socblitz:/var/ossec/integrations/custom-socblitz
+      - ./config/integrations/custom-socblitz.py:/var/ossec/integrations/custom-socblitz.py
+
+volumes:
+  wazuh-api-config:
+  wazuh-etc:
+  wazuh-logs:
+  wazuh-queue:
+  wazuh-var-multigroups:
+  wazuh-integrations:
+  wazuh-active-response:
+  wazuh-agentless:
+  wazuh-wodles:

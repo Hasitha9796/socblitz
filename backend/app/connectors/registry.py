@@ -4,6 +4,7 @@ Each connector wraps a specific tool's API.
 """
 from __future__ import annotations
 import asyncio
+import json
 import httpx
 from abc import ABC, abstractmethod
 from loguru import logger
@@ -68,9 +69,71 @@ class WazuhIndexerClient(BaseConnector):
         }
         return await self.search("wazuh-states-vulnerabilities-*", body)
 
-    async def get_recent_alerts(self, hours: int = 24, size: int = 100) -> dict:
+    async def get_vulnerability_counts_by_agent(self) -> dict[str, dict]:
+        """Total + critical vulnerability counts for the whole fleet in a
+        handful of aggregation requests, instead of one search per agent.
+        Returns {agent_id: {"total": int, "critical": int}}."""
+        counts: dict[str, dict] = {}
+        after_key = None
+        async with self._client() as c:
+            while True:
+                composite: dict = {
+                    "size": 1000,
+                    "sources": [{"agent": {"terms": {"field": "agent.id"}}}],
+                }
+                if after_key:
+                    composite["after"] = after_key
+                body = {
+                    "size": 0,
+                    "aggs": {"by_agent": {
+                        "composite": composite,
+                        "aggs": {"critical": {"filter": {
+                            "terms": {"vulnerability.severity": ["Critical", "critical"]}
+                        }}},
+                    }},
+                }
+                r = await c.post("/wazuh-states-vulnerabilities-*/_search", json=body)
+                r.raise_for_status()
+                agg = r.json().get("aggregations", {}).get("by_agent", {})
+                for bucket in agg.get("buckets", []):
+                    counts[str(bucket["key"]["agent"])] = {
+                        "total": bucket["doc_count"],
+                        "critical": bucket["critical"]["doc_count"],
+                    }
+                after_key = agg.get("after_key")
+                if not after_key or not agg.get("buckets"):
+                    return counts
+
+    async def get_recent_alerts(self, hours: int = 24, size: int = 100,
+                                start: str | None = None, end: str | None = None,
+                                q: str | None = None) -> dict:
+        # An explicit start/end window (ISO-8601) overrides the relative `hours`
+        # lookback used by the default live view.
+        if start or end:
+            rng: dict = {}
+            if start:
+                rng["gte"] = start
+            if end:
+                rng["lte"] = end
+        else:
+            rng = {"gte": f"now-{hours}h"}
+
+        must: list = [{"range": {"@timestamp": rng}}]
+        # Optional Lucene query_string, e.g. `rule.level:>=10 AND agent.name:web-01`.
+        # default_operator AND makes space-separated terms narrow (dashboard-like);
+        # lenient tolerates type mismatches instead of erroring the whole search.
+        if q and q.strip():
+            must.append({
+                "query_string": {
+                    "query": q,
+                    "default_operator": "AND",
+                    "analyze_wildcard": True,
+                    "lenient": True,
+                }
+            })
+
         body = {
-            "query": {"range": {"@timestamp": {"gte": f"now-{hours}h"}}},
+            "query": {"bool": {"must": must}},
             "size": size,
             "sort": [{"@timestamp": {"order": "desc"}}],
         }
@@ -127,11 +190,24 @@ class WazuhManagerClient(BaseConnector):
         except Exception as e:
             return False, str(e)
 
-    async def list_agents(self, limit: int = 500) -> list[dict]:
+    async def list_agents(self, page_size: int = 500) -> list[dict]:
+        """Fetch every agent, paginating past the Wazuh API's per-request cap."""
+        agents: list[dict] = []
+        offset = 0
         async with await self._authed_client() as c:
-            r = await c.get("/agents", params={"limit": limit, "select": "id,name,ip,os.platform,os.version,status,version,group,lastKeepAlive"})
-            r.raise_for_status()
-            return r.json().get("data", {}).get("affected_items", [])
+            while True:
+                r = await c.get("/agents", params={
+                    "limit": page_size,
+                    "offset": offset,
+                    "select": "id,name,ip,os.platform,os.version,status,version,group,lastKeepAlive",
+                })
+                r.raise_for_status()
+                data = r.json().get("data", {})
+                items = data.get("affected_items", [])
+                agents.extend(items)
+                offset += len(items)
+                if not items or offset >= data.get("total_affected_items", 0):
+                    return agents
 
     async def get_agent(self, agent_id: str) -> dict:
         async with await self._authed_client() as c:
@@ -143,6 +219,21 @@ class WazuhManagerClient(BaseConnector):
         payload = {"command": command, "arguments": arguments or [], "agents_list": [agent_id]}
         async with await self._authed_client() as c:
             r = await c.put("/active-response", json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    async def delete_agent(self, agent_id: str) -> dict:
+        """Deregister an agent from the manager — the API equivalent of
+        `/var/ossec/bin/manage_agents -r <id>`. `older_than=0s` removes it
+        regardless of last-seen age (the API default is 7d), and purge drops
+        it from the manager's key store entirely."""
+        async with await self._authed_client() as c:
+            r = await c.delete("/agents", params={
+                "agents_list": agent_id,
+                "status": "all",       # required by the API; "all" = any agent state
+                "older_than": "0s",
+                "purge": "true",
+            })
             r.raise_for_status()
             return r.json()
 
@@ -233,14 +324,58 @@ class VelociraptorClient(BaseConnector):
             prep = await c.get("/app/index.html")
             csrf = prep.headers.get("x-csrf-token", "")
             hdr = {"X-CSRF-Token": csrf, "Referer": self.url + "/"}
+            # GetClientFlows takes client_id as a query param and returns a
+            # table: {columns: [...], rows: [{json: "<array aligned to columns>"}]}
             r = await c.get(
-                f"/api/v1/GetClientFlows/{client_id}",
-                params={"count": limit},
+                "/api/v1/GetClientFlows",
+                params={"client_id": client_id, "count": limit},
                 headers=hdr,
             )
             if r.status_code != 200:
+                logger.warning(f"Velociraptor GetClientFlows {r.status_code}: {r.text[:200]}")
                 return []
-            return r.json().get("items", [])
+            data = r.json()
+            cols = data.get("columns", [])
+            flows = []
+            for row in data.get("rows", []):
+                vals = dict(zip(cols, json.loads(row.get("json", "[]"))))
+                ctx = vals.get("_Flow") or {}
+                ctx["session_id"] = ctx.get("session_id") or vals.get("FlowId")
+                ctx["state"] = vals.get("State") or ctx.get("state")
+                ctx["create_time"] = vals.get("Created") or ctx.get("create_time")
+                ctx.setdefault("request", {})["artifacts"] = vals.get("Artifacts") or []
+                ctx["total_collected_rows"] = vals.get("Rows", 0)
+                # Multi-source artifacts store results under "Artifact/Source"
+                # names — these are what GetTable accepts, not the request name.
+                ctx["artifacts_with_results"] = (
+                    vals.get("_ArtifactsWithResults") or ctx.get("artifacts_with_results") or []
+                )
+                flows.append(ctx)
+            return flows
+
+    async def get_flow_results(
+        self, client_id: str, flow_id: str, artifact: str,
+        start_row: int = 0, rows: int = 100,
+    ) -> dict:
+        async with self._new_client() as c:
+            prep = await c.get("/app/index.html")
+            csrf = prep.headers.get("x-csrf-token", "")
+            hdr = {"X-CSRF-Token": csrf, "Referer": self.url + "/"}
+            r = await c.get(
+                "/api/v1/GetTable",
+                params={
+                    "client_id": client_id, "flow_id": flow_id, "artifact": artifact,
+                    "type": "CLIENT", "start_row": start_row, "rows": rows,
+                },
+                headers=hdr,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return {
+                "columns": data.get("columns", []),
+                "rows": [json.loads(row.get("json", "[]")) for row in data.get("rows", [])],
+                "total_rows": int(data.get("total_rows", 0)),
+            }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
