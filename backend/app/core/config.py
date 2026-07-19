@@ -56,10 +56,15 @@ class Settings(BaseSettings):
     MINIO_BUCKET_REPORTS: str = "socblitz-reports"
     MINIO_BUCKET_ARTIFACTS: str = "socblitz-artifacts"
 
+    # ── ClickHouse (analytics store — replaces the Wazuh Indexer/OpenSearch) ──
+    CLICKHOUSE_URL: str = "http://clickhouse:8123"
+    CLICKHOUSE_USER: str = "socblitz"
+    CLICKHOUSE_PASSWORD: str = ""
+
+    # ── SocBlitz Engine (custom detection engine — replaces the Wazuh manager) ─
+    ENGINE_URL: str = "http://engine:8090"   # auth reuses AGENT_ENROLL_KEY below
+
     # ── Wazuh ────────────────────────────────────────────────────────────────
-    WAZUH_INDEXER_URL: str = ""
-    WAZUH_INDEXER_USER: str = "admin"
-    WAZUH_INDEXER_PASSWORD: str = ""
     WAZUH_MANAGER_URL: str = ""
     WAZUH_MANAGER_USER: str = "wazuh-wui"
     WAZUH_MANAGER_PASSWORD: str = ""
@@ -88,6 +93,18 @@ class Settings(BaseSettings):
     MISP_API_KEY: str = ""
     ABUSEIPDB_API_KEY: str = ""
     OTX_API_KEY: str = ""
+
+    # ── Dark Web / leak monitoring ───────────────────────────────────────────
+    # Provider-agnostic: each adapter activates only when its key is present,
+    # otherwise the source is reported as "skipped" (see services/darkweb.py).
+    HIBP_API_KEY: str = ""                       # Have I Been Pwned (account/domain breach search)
+    INTELX_API_KEY: str = ""                     # Intelligence X (darkweb/leak selector search)
+    INTELX_URL: str = "https://2.intelx.io"
+    DEHASHED_EMAIL: str = ""                     # Dehashed uses email + key basic auth
+    DEHASHED_API_KEY: str = ""
+    LEAKCHECK_API_KEY: str = ""                  # LeakCheck Pro (leaked-credential search)
+    # How far back a scheduled asset rescan is considered "recent enough" to skip.
+    DARKWEB_SCAN_INTERVAL_HOURS: int = 6
 
     # ── AI / LLM ─────────────────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""

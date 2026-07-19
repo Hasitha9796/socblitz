@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import {
   LayoutDashboard, Bell, FolderOpen, Monitor, Shield, Workflow,
   Plug, Settings, LogOut, ChevronLeft, ChevronRight, User,
-  AlertTriangle, Activity, Sparkles, Fingerprint
+  AlertTriangle, Activity, Sparkles, Fingerprint, Cpu, Radar
 } from 'lucide-react'
 import { useAuthStore } from '../stores/auth'
 import { useQuery } from '@tanstack/react-query'
@@ -26,6 +26,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/cases',        icon: FolderOpen,      label: 'Cases'         },
       { to: '/threat-intel', icon: Shield,          label: 'Threat Intel'  },
+      { to: '/darkweb',      icon: Radar,           label: 'Dark Web'      },
       { to: '/forensics',    icon: Fingerprint,     label: 'Forensics'     },
       { to: '/soar',         icon: Workflow,        label: 'SOAR'          },
     ],
@@ -33,6 +34,7 @@ const NAV_GROUPS = [
   {
     label: 'Platform',
     items: [
+      { to: '/engine',       icon: Cpu,             label: 'Engine'       },
       { to: '/connectors',   icon: Plug,            label: 'Connectors'   },
       { to: '/settings',     icon: Settings,        label: 'Settings'     },
     ],

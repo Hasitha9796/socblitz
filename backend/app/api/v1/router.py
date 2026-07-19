@@ -36,6 +36,7 @@ from app.models import (
     Connector, ConnectorType,
     CustomDashboard,
     Workflow, WorkflowRun, WorkflowTrigger, TaskStatus,
+    DarkWebAsset, DarkWebFinding, DarkWebEntityType, DarkWebFindingStatus,
     AuditLog,
     new_uuid,
 )
@@ -2180,6 +2181,192 @@ api_router.include_router(connector_router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SocBlitz Engine — workbench (Extractor / Rule Generation / Test tabs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+engine_router = APIRouter(prefix="/engine", tags=["engine"])
+
+
+class ExtractorTestRequest(BaseModel):
+    sample: str
+    yaml: str = ""       # YAML decoder definitions (preferred)
+    pattern: str = ""    # legacy single-regex mode
+
+
+class LogTestRequest(BaseModel):
+    message: str
+    program: str = ""
+
+
+class RuleTestRequest(BaseModel):
+    rule: dict
+    message: str
+    program: str = ""
+
+
+class NormalizeRequest(BaseModel):
+    message: str
+    program: str = ""
+
+
+class GenerateRequest(BaseModel):
+    sample: str
+    hint: str = ""
+
+
+class ParserTestRequest(BaseModel):
+    sample: str
+    yaml: str = ""
+    program: str = ""
+
+
+class YaraLTestRequest(BaseModel):
+    rule: str
+    messages: list[str] = []
+    program: str = ""
+
+
+def _engine_client():
+    from app.connectors.registry import EngineClient
+    return EngineClient()
+
+
+@engine_router.get("/rules")
+async def engine_list_rules(current_user: CurrentUser):
+    """The engine's active ruleset (JSON + Sigma), metadata only."""
+    try:
+        return await _engine_client().list_rules()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.post("/extractor/test")
+async def engine_extractor_test(payload: ExtractorTestRequest, current_user: CurrentUser):
+    """Test YAML decoder(s) — or a legacy regex — against a sample line."""
+    try:
+        return await _engine_client().test_extractor(payload.sample, yaml=payload.yaml, pattern=payload.pattern)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.post("/test")
+async def engine_log_test(payload: LogTestRequest, current_user: CurrentUser):
+    """Run a raw log line through decode + the active ruleset (logtest)."""
+    try:
+        return await _engine_client().test_log(payload.message, payload.program)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.post("/rules/test")
+async def engine_rule_test(payload: RuleTestRequest, current_user: CurrentUser):
+    """Test a candidate JSON rule against a log line (no persistence)."""
+    try:
+        return await _engine_client().test_rule(payload.rule, payload.message, payload.program)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.post("/normalize")
+async def engine_normalize(payload: NormalizeRequest, current_user: CurrentUser):
+    """Normalize a raw log line to a UDM record via the active CBN parsers."""
+    try:
+        return await _engine_client().normalize(payload.message, payload.program)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.post("/parser/test")
+async def engine_parser_test(payload: ParserTestRequest, current_user: CurrentUser):
+    """Test a candidate CBN parser (YAML) against a sample line; show the UDM."""
+    try:
+        return await _engine_client().test_parser(payload.sample, yaml=payload.yaml, program=payload.program)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.post("/parser/generate")
+async def engine_parser_generate(payload: GenerateRequest, current_user: CurrentUser):
+    """AI-generate a CBN parser from a log sample (validated against the engine)."""
+    from app.services.parser_ai import generate_parser
+    try:
+        return await generate_parser(payload.sample, payload.hint)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+
+
+@engine_router.post("/yaral/generate")
+async def engine_yaral_generate(payload: GenerateRequest, current_user: CurrentUser):
+    """AI-generate a YARA-L detection rule from a log sample."""
+    from app.services.parser_ai import generate_yaral
+    try:
+        return await generate_yaral(payload.sample, payload.hint)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+
+
+@engine_router.post("/yaral/test")
+async def engine_yaral_test(payload: YaraLTestRequest, current_user: CurrentUser):
+    """Evaluate a YARA-L rule against one or more sample lines (single + windowed)."""
+    try:
+        return await _engine_client().test_yaral(payload.rule, payload.messages, payload.program)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.get("/yaral/rules")
+async def engine_list_yaral(current_user: CurrentUser):
+    """The engine's active YARA-L ruleset (metadata only)."""
+    try:
+        return await _engine_client().list_yaral()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+class ParserSaveRequest(BaseModel):
+    yaml: str
+
+
+@engine_router.get("/parsers")
+async def engine_list_parsers(current_user: CurrentUser):
+    """List the active CBN parsers (metadata + editable YAML)."""
+    try:
+        return await _engine_client().list_parsers()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.post("/parsers", dependencies=[Depends(require_admin())])
+async def engine_save_parser(payload: ParserSaveRequest, current_user: CurrentUser):
+    """Create or update a CBN parser (validated + persisted + hot-reloaded)."""
+    try:
+        return await _engine_client().save_parser(payload.yaml)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.get("/parsers/{name}")
+async def engine_get_parser(name: str, current_user: CurrentUser):
+    """Fetch one parser by name."""
+    try:
+        return await _engine_client().get_parser(name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+@engine_router.delete("/parsers/{name}", dependencies=[Depends(require_admin())])
+async def engine_delete_parser(name: str, current_user: CurrentUser):
+    """Delete a custom parser (built-ins cannot be deleted)."""
+    try:
+        return await _engine_client().delete_parser(name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Engine unavailable: {e}")
+
+
+api_router.include_router(engine_router)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Threat Intelligence
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2216,6 +2403,240 @@ async def misp_lookup(body: dict, current_user: CurrentUser):
 
 
 api_router.include_router(ti_router)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dark Web monitoring — leaked accounts & enterprise exposure
+# ─────────────────────────────────────────────────────────────────────────────
+
+darkweb_router = APIRouter(prefix="/darkweb", tags=["darkweb"])
+
+
+class DarkWebSearchRequest(BaseModel):
+    query: str
+    entity_type: DarkWebEntityType = DarkWebEntityType.DOMAIN
+
+
+class DarkWebAssetCreate(BaseModel):
+    value: str
+    entity_type: DarkWebEntityType = DarkWebEntityType.DOMAIN
+    label: str | None = None
+
+
+class DarkWebAssetOut(BaseModel):
+    id: str
+    entity_type: DarkWebEntityType
+    value: str
+    label: str | None
+    is_active: bool
+    last_scanned_at: datetime | None
+    last_error: str | None
+    tenant_id: str | None
+    finding_count: int = 0
+    new_count: int = 0
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DarkWebFindingOut(BaseModel):
+    id: str
+    asset_id: str | None
+    source: str
+    entity_type: DarkWebEntityType
+    entity_value: str
+    title: str
+    description: str | None
+    severity: AlertSeverity
+    status: DarkWebFindingStatus
+    breach_name: str | None
+    exposed_data: list | None
+    leak_date: str | None
+    tenant_id: str | None
+    first_seen: datetime
+    last_seen: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DarkWebFindingUpdate(BaseModel):
+    status: DarkWebFindingStatus
+
+
+def _darkweb_tenant(current_user: "User") -> str | None:
+    """The tenant a write/scan is scoped to for this user."""
+    return current_user.tenant_id
+
+
+@darkweb_router.post("/search")
+async def darkweb_search(payload: DarkWebSearchRequest, current_user: CurrentUser):
+    """Ad-hoc, on-demand dark web / leak search across all configured providers.
+    Results are NOT persisted — use monitored assets for that."""
+    from app.services.darkweb import DarkWebService
+    svc = DarkWebService()
+    return await svc.search(query=payload.query, entity_type=payload.entity_type.value)
+
+
+@darkweb_router.get("/stats")
+async def darkweb_stats(db: DbDep, current_user: CurrentUser):
+    """Summary tiles: monitored assets + exposures by severity/status."""
+    asset_q = select(func.count()).select_from(DarkWebAsset)
+    finding_q = select(DarkWebFinding)
+    if current_user.role == UserRole.CUSTOMER_USER and current_user.tenant_id:
+        asset_q = asset_q.where(DarkWebAsset.tenant_id == current_user.tenant_id)
+        finding_q = finding_q.where(DarkWebFinding.tenant_id == current_user.tenant_id)
+
+    asset_count = (await db.execute(asset_q)).scalar() or 0
+
+    by_sev: dict[str, int] = {}
+    for sev in AlertSeverity:
+        r = await db.execute(finding_q.where(DarkWebFinding.severity == sev).with_only_columns(func.count()))
+        by_sev[sev.value] = r.scalar() or 0
+    by_status: dict[str, int] = {}
+    for st in DarkWebFindingStatus:
+        r = await db.execute(finding_q.where(DarkWebFinding.status == st).with_only_columns(func.count()))
+        by_status[st.value] = r.scalar() or 0
+
+    return {
+        "monitored_assets": asset_count,
+        "total_findings": sum(by_sev.values()),
+        "by_severity": by_sev,
+        "by_status": by_status,
+    }
+
+
+@darkweb_router.get("/assets", response_model=list[DarkWebAssetOut])
+async def list_darkweb_assets(db: DbDep, current_user: CurrentUser):
+    q = select(DarkWebAsset).order_by(desc(DarkWebAsset.created_at))
+    if current_user.role == UserRole.CUSTOMER_USER and current_user.tenant_id:
+        q = q.where(DarkWebAsset.tenant_id == current_user.tenant_id)
+    assets = (await db.execute(q)).scalars().all()
+    if not assets:
+        return []
+
+    asset_ids = [a.id for a in assets]
+    total = dict((await db.execute(
+        select(DarkWebFinding.asset_id, func.count())
+        .where(DarkWebFinding.asset_id.in_(asset_ids)).group_by(DarkWebFinding.asset_id)
+    )).all())
+    new = dict((await db.execute(
+        select(DarkWebFinding.asset_id, func.count())
+        .where(DarkWebFinding.asset_id.in_(asset_ids), DarkWebFinding.status == DarkWebFindingStatus.NEW)
+        .group_by(DarkWebFinding.asset_id)
+    )).all())
+
+    return [
+        DarkWebAssetOut(**_row_dict(a), finding_count=total.get(a.id, 0), new_count=new.get(a.id, 0))
+        for a in assets
+    ]
+
+
+@darkweb_router.post("/assets", response_model=DarkWebAssetOut, status_code=201)
+async def create_darkweb_asset(payload: DarkWebAssetCreate, db: DbDep, current_user: CurrentUser):
+    value = payload.value.strip().lower()
+    if not value:
+        raise HTTPException(status_code=422, detail="value is required")
+
+    tenant_id = _darkweb_tenant(current_user)
+    existing = await db.execute(select(DarkWebAsset).where(
+        DarkWebAsset.tenant_id == tenant_id,
+        DarkWebAsset.entity_type == payload.entity_type,
+        DarkWebAsset.value == value,
+    ))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="This asset is already monitored")
+
+    asset = DarkWebAsset(
+        tenant_id=tenant_id,
+        entity_type=payload.entity_type,
+        value=value,
+        label=payload.label,
+        created_by=current_user.id,
+    )
+    db.add(asset)
+    await db.commit()
+    await db.refresh(asset)
+
+    # Kick off an immediate first scan so the asset isn't empty on creation.
+    _queue_darkweb_scan(asset.id)
+    return DarkWebAssetOut(**_row_dict(asset), finding_count=0, new_count=0)
+
+
+async def _get_darkweb_asset(db, asset_id: str, current_user) -> DarkWebAsset:
+    result = await db.execute(select(DarkWebAsset).where(DarkWebAsset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Monitored asset not found")
+    if current_user.role == UserRole.CUSTOMER_USER and current_user.tenant_id:
+        if asset.tenant_id != current_user.tenant_id:
+            raise HTTPException(status_code=404, detail="Monitored asset not found")
+    return asset
+
+
+@darkweb_router.post("/assets/{asset_id}/scan")
+async def scan_darkweb_asset(asset_id: str, db: DbDep, current_user: CurrentUser):
+    asset = await _get_darkweb_asset(db, asset_id, current_user)
+    _queue_darkweb_scan(asset.id)
+    return {"status": "queued", "asset_id": asset.id}
+
+
+@darkweb_router.delete("/assets/{asset_id}", status_code=204)
+async def delete_darkweb_asset(asset_id: str, db: DbDep, current_user: CurrentUser):
+    asset = await _get_darkweb_asset(db, asset_id, current_user)
+    await db.delete(asset)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@darkweb_router.get("/findings", response_model=list[DarkWebFindingOut])
+async def list_darkweb_findings(
+    db: DbDep,
+    current_user: CurrentUser,
+    asset_id: str | None = None,
+    status_filter: DarkWebFindingStatus | None = Query(None, alias="status"),
+    severity: AlertSeverity | None = None,
+    skip: int = 0,
+    limit: int = 100,
+):
+    q = select(DarkWebFinding).order_by(desc(DarkWebFinding.last_seen))
+    if current_user.role == UserRole.CUSTOMER_USER and current_user.tenant_id:
+        q = q.where(DarkWebFinding.tenant_id == current_user.tenant_id)
+    if asset_id:
+        q = q.where(DarkWebFinding.asset_id == asset_id)
+    if status_filter:
+        q = q.where(DarkWebFinding.status == status_filter)
+    if severity:
+        q = q.where(DarkWebFinding.severity == severity)
+    result = await db.execute(q.offset(skip).limit(limit))
+    return result.scalars().all()
+
+
+@darkweb_router.patch("/findings/{finding_id}", response_model=DarkWebFindingOut)
+async def update_darkweb_finding(finding_id: str, payload: DarkWebFindingUpdate, db: DbDep, current_user: CurrentUser):
+    result = await db.execute(select(DarkWebFinding).where(DarkWebFinding.id == finding_id))
+    finding = result.scalar_one_or_none()
+    if not finding:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    if current_user.role == UserRole.CUSTOMER_USER and current_user.tenant_id:
+        if finding.tenant_id != current_user.tenant_id:
+            raise HTTPException(status_code=404, detail="Finding not found")
+    finding.status = payload.status
+    await db.commit()
+    await db.refresh(finding)
+    return finding
+
+
+def _queue_darkweb_scan(asset_id: str) -> None:
+    try:
+        from app.workers.celery_app import celery_app
+        celery_app.send_task("app.workers.tasks.scan_darkweb_asset", args=[asset_id])
+    except Exception as e:
+        logger.warning(f"Failed to queue dark web scan for asset {asset_id}: {e}")
+
+
+api_router.include_router(darkweb_router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

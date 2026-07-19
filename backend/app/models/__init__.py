@@ -141,6 +141,19 @@ class AssetCompromiseStatus(str, Enum):
     UNKNOWN      = "unknown"
 
 
+class DarkWebEntityType(str, Enum):
+    DOMAIN  = "domain"    # company domain — leaked employee accounts / breaches naming it
+    EMAIL   = "email"     # a specific mailbox
+    KEYWORD = "keyword"   # brand / product / executive name mentions
+
+
+class DarkWebFindingStatus(str, Enum):
+    NEW           = "new"
+    INVESTIGATING = "investigating"
+    RESOLVED      = "resolved"
+    FALSE_POS     = "false_positive"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Tenant (multi-tenancy)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -451,6 +464,69 @@ class Agent(Base):
     updated_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="agents")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dark Web monitoring — leaked accounts & enterprise exposure on the dark web
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DarkWebAsset(Base):
+    """A monitored enterprise selector (domain / email / brand keyword). A
+    scheduled worker rescans each active asset and records DarkWebFindings."""
+    __tablename__ = "darkweb_assets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "entity_type", "value", name="uq_darkweb_asset"),
+        Index("ix_darkweb_assets_tenant", "tenant_id"),
+    )
+
+    id:          Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    tenant_id:   Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), index=True)
+    entity_type: Mapped[DarkWebEntityType] = mapped_column(SAEnum(DarkWebEntityType), nullable=False)
+    value:       Mapped[str] = mapped_column(String(512), nullable=False)   # e.g. acme.com
+    label:       Mapped[str | None] = mapped_column(String(256))            # human-friendly name
+    is_active:   Mapped[bool] = mapped_column(Boolean, default=True)
+    last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error:  Mapped[str | None] = mapped_column(Text)
+    created_by:  Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    findings: Mapped[list["DarkWebFinding"]] = relationship(
+        "DarkWebFinding", back_populates="asset", cascade="all, delete-orphan"
+    )
+
+
+class DarkWebFinding(Base):
+    """One exposure surfaced for a monitored asset (or an ad-hoc search). The
+    `fingerprint` deduplicates the same exposure across repeated scans."""
+    __tablename__ = "darkweb_findings"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "fingerprint", name="uq_darkweb_finding"),
+        Index("ix_darkweb_findings_tenant_status", "tenant_id", "status"),
+        Index("ix_darkweb_findings_asset", "asset_id"),
+    )
+
+    id:           Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=new_uuid)
+    tenant_id:    Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), index=True)
+    asset_id:     Mapped[str | None] = mapped_column(ForeignKey("darkweb_assets.id", ondelete="CASCADE"), index=True)
+    fingerprint:  Mapped[str] = mapped_column(String(128), nullable=False)   # stable dedup key
+    source:       Mapped[str] = mapped_column(String(64), nullable=False)    # hibp | intelx | dehashed | leakcheck
+    entity_type:  Mapped[DarkWebEntityType] = mapped_column(SAEnum(DarkWebEntityType), nullable=False)
+    entity_value: Mapped[str] = mapped_column(String(512), nullable=False)
+    title:        Mapped[str] = mapped_column(String(512), nullable=False)
+    description:  Mapped[str | None] = mapped_column(Text)
+    severity:     Mapped[AlertSeverity] = mapped_column(SAEnum(AlertSeverity), default=AlertSeverity.MEDIUM, index=True)
+    status:       Mapped[DarkWebFindingStatus] = mapped_column(SAEnum(DarkWebFindingStatus), default=DarkWebFindingStatus.NEW, index=True)
+    breach_name:  Mapped[str | None] = mapped_column(String(256))
+    exposed_data: Mapped[list | None] = mapped_column(JSONB)   # ["Passwords", "Email addresses", ...]
+    leak_date:    Mapped[str | None] = mapped_column(String(32))   # provider-reported, kept as string
+    raw:          Mapped[dict | None] = mapped_column(JSONB)
+    first_seen:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen:    Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    asset: Mapped["DarkWebAsset"] = relationship("DarkWebAsset", back_populates="findings")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

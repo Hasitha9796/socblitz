@@ -5,8 +5,8 @@
 export type ConnectorMeta = { label: string; desc: string; docs: string; category: string }
 
 export const CONNECTOR_META: Record<string, ConnectorMeta> = {
-  wazuh_manager:   { label: 'SocBlitz Manager',      desc: 'Agent management, active response, rules', docs: 'https://documentation.wazuh.com', category: 'SIEM' },
-  wazuh_indexer:   { label: 'SocBlitz Indexer',      desc: 'OpenSearch — alert and vulnerability data', docs: 'https://documentation.wazuh.com', category: 'SIEM' },
+  wazuh_manager:   { label: 'SocBlitz Engine',       desc: 'Detection engine — agent management, rules, FIM', docs: 'https://documentation.wazuh.com', category: 'SIEM' },
+  wazuh_indexer:   { label: 'SocBlitz Store',        desc: 'ClickHouse — alert and vulnerability data', docs: 'https://clickhouse.com/docs', category: 'SIEM' },
   velociraptor:    { label: 'SocBlitz Forensics',    desc: 'Endpoint forensics and artifact collection', docs: 'https://docs.velociraptor.app', category: 'DFIR' },
   misp:            { label: 'SocBlitz Threat Intel', desc: 'Threat intelligence — IOCs and events', docs: 'https://www.misp-project.org', category: 'Intel' },
   shuffle:         { label: 'Shuffle SOAR',          desc: 'Security orchestration and automation', docs: 'https://shuffler.io/docs', category: 'SOAR' },

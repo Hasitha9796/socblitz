@@ -80,16 +80,20 @@ async def seed_connectors_from_env() -> None:
 
     connector_defaults = [
         {
+            # Analytics store is ClickHouse now; the connector type keeps its
+            # historical "wazuh_indexer" key for DB/back-compat.
             "connector_type": ConnectorType.WAZUH_INDEXER,
-            "url": settings.WAZUH_INDEXER_URL,
-            "username": settings.WAZUH_INDEXER_USER,
-            "password": settings.WAZUH_INDEXER_PASSWORD,
+            "url": settings.CLICKHOUSE_URL,
+            "username": settings.CLICKHOUSE_USER,
+            "password": settings.CLICKHOUSE_PASSWORD,
         },
         {
+            # Detection/agent management is the SocBlitz engine now; the
+            # connector type keeps its historical "wazuh_manager" key.
             "connector_type": ConnectorType.WAZUH_MANAGER,
-            "url": settings.WAZUH_MANAGER_URL,
-            "username": settings.WAZUH_MANAGER_USER,
-            "password": settings.WAZUH_MANAGER_PASSWORD,
+            "url": settings.ENGINE_URL,
+            "username": "",
+            "password": "",
         },
         {
             "connector_type": ConnectorType.VELOCIRAPTOR,
@@ -103,13 +107,29 @@ async def seed_connectors_from_env() -> None:
         },
     ]
 
+    # Repair rows left pointing at services removed in the ClickHouse/engine
+    # migration. Only rewrites URLs still aimed at the retired hosts, so
+    # operator-customised connectors are never clobbered.
+    stale_hosts = {
+        ConnectorType.WAZUH_MANAGER: ("wazuh-manager", settings.ENGINE_URL),
+        ConnectorType.WAZUH_INDEXER: ("wazuh-indexer", settings.CLICKHOUSE_URL),
+    }
+
     async with AsyncSessionLocal() as db:
         for cfg in connector_defaults:
             ctype = cfg["connector_type"]
             result = await db.execute(
                 select(Connector).where(Connector.connector_type == ctype)
             )
-            if result.scalar_one_or_none():
+            existing = result.scalar_one_or_none()
+            if existing:
+                repair = stale_hosts.get(ctype)
+                if repair and existing.url and repair[0] in existing.url:
+                    existing.url = repair[1]
+                    existing.username = cfg.get("username") or ""
+                    existing.password = cfg.get("password") or ""
+                    existing.verified = False
+                    logger.info(f"Repaired connector URL: {ctype.value} -> {repair[1]}")
                 continue
 
             connector = Connector(**cfg)

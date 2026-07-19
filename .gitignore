@@ -8,3 +8,9 @@ dist/
 
 # OS
 .DS_Store
+
+# Secrets
+.env
+
+# Separate repo (has its own GitHub remote)
+integrations/

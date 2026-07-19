@@ -1,0 +1,15 @@
+title: SSH Failed Password (Sigma)
+id: sigma-ssh-failed-password
+status: stable
+description: Detects failed SSH password authentication, a brute-force signal.
+logsource:
+  product: linux
+  service: sshd
+detection:
+  selection:
+    - Failed password
+  condition: selection
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1110

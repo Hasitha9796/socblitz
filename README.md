@@ -82,7 +82,7 @@ Configure each connector URL + credentials in `.env`. SocBlitz seeds them on fir
 | Connector | Purpose |
 |-----------|---------|
 | Wazuh Manager | Agent management, rules, active response |
-| Wazuh Indexer | Alert and vulnerability data (OpenSearch) |
+| ClickHouse | Alert & vulnerability analytics store (fed by Vector from the Manager's alerts.json) |
 | Velociraptor | DFIR and endpoint forensics |
 | Shuffle | SOAR automation |
 | TheHive | Case management |

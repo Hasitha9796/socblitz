@@ -1,0 +1,122 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SocBlitz log-shipping pipeline: Wazuh Manager → ClickHouse
+#
+# Wazuh Manager continuously writes every decoded/ruled alert to
+# /var/ossec/logs/alerts/alerts.json (one JSON object per line). Vector tails
+# that file, parses each line, reshapes it to the ClickHouse column layout, and
+# inserts it. This replaces the Manager's built-in Filebeat → OpenSearch path.
+#
+#   file(alerts.json) ──► parse ──► alerts_row ─────────────► clickhouse (wazuh_alerts)
+#                                     └─► vuln_filter ─► vuln_row ─► clickhouse (wazuh_vulnerabilities)
+#
+# The alerts.json file is exposed to this container by mounting the Manager's
+# wazuh-logs volume read-only at /var/ossec/logs (see docker-compose.yml).
+# ─────────────────────────────────────────────────────────────────────────────
+
+data_dir = "/var/lib/vector"
+
+# ── Source: tail the Wazuh alerts journal ────────────────────────────────────
+[sources.wazuh_alerts_file]
+type = "file"
+include = ["/var/ossec/logs/alerts/alerts.json"]
+read_from = "beginning"          # ingest existing history on first start
+ignore_older_secs = 86400
+
+# ── Parse each JSON line, preserving the original text as `raw` ───────────────
+[transforms.parsed]
+type = "remap"
+inputs = ["wazuh_alerts_file"]
+source = '''
+raw = .message
+. = object(parse_json!(raw)) ?? {}
+.raw = raw
+'''
+
+# ── Shape the row for wazuh_alerts ───────────────────────────────────────────
+[transforms.alerts_row]
+type = "remap"
+inputs = ["parsed"]
+source = '''
+# Wazuh timestamps look like 2026-07-12T14:30:00.123+0000; normalise to a
+# plain UTC string ClickHouse parses straight into DateTime64(3).
+ts = parse_timestamp(.timestamp, "%Y-%m-%dT%H:%M:%S%.f%z") ?? (parse_timestamp(.timestamp, "%Y-%m-%dT%H:%M:%S%z") ?? now())
+
+. = {
+  "alert_id":         to_string(.id ?? ""),
+  "timestamp":        format_timestamp!(ts, "%Y-%m-%d %H:%M:%S%.3f"),
+  "rule_id":          to_string(.rule.id ?? ""),
+  "rule_level":       to_int(.rule.level) ?? 0,
+  "rule_description": to_string(.rule.description ?? ""),
+  "rule_groups":      array(.rule.groups) ?? [],
+  "mitre_tactic":     array(.rule.mitre.tactic) ?? [],
+  "mitre_technique":  array(.rule.mitre.technique) ?? [],
+  "agent_id":         to_string(.agent.id ?? ""),
+  "agent_name":       to_string(.agent.name ?? ""),
+  "data_srcip":       to_string(.data.srcip ?? ""),
+  "data_dstuser":     to_string(.data.dstuser ?? ""),
+  "raw":              to_string(.raw ?? "")
+}
+'''
+
+# ── Keep only vulnerability-detector alerts for the vuln table ────────────────
+[transforms.vuln_filter]
+type = "filter"
+inputs = ["parsed"]
+condition.type = "vrl"
+condition.source = '''
+includes(array(.rule.groups) ?? [], "vulnerability-detector") ||
+  exists(.data.vulnerability)
+'''
+
+# ── Shape the row for wazuh_vulnerabilities ──────────────────────────────────
+# Field paths under data.vulnerability vary slightly by Wazuh version; we try
+# the common ones and fall back to empty.
+[transforms.vuln_row]
+type = "remap"
+inputs = ["vuln_filter"]
+source = '''
+ts = parse_timestamp(.timestamp, "%Y-%m-%dT%H:%M:%S%.f%z") ?? (parse_timestamp(.timestamp, "%Y-%m-%dT%H:%M:%S%z") ?? now())
+v = .data.vulnerability ?? {}
+score = to_float(v.cvss.cvss3.base_score) ?? (to_float(v.score.base) ?? 0.0)
+
+. = {
+  "alert_id":        to_string(.id ?? ""),
+  "timestamp":       format_timestamp!(ts, "%Y-%m-%d %H:%M:%S%.3f"),
+  "agent_id":        to_string(.agent.id ?? ""),
+  "agent_name":      to_string(.agent.name ?? ""),
+  "vuln_id":         to_string(v.cve ?? (v.id ?? "")),
+  "vuln_severity":   to_string(v.severity ?? "Untriaged"),
+  "vuln_score_base": score,
+  "package_name":    to_string(v.package.name ?? ""),
+  "raw":             to_string(.raw ?? "")
+}
+'''
+
+# ── Sinks ────────────────────────────────────────────────────────────────────
+[sinks.clickhouse_alerts]
+type = "clickhouse"
+inputs = ["alerts_row"]
+endpoint = "http://clickhouse:8123"
+database = "wazuh"
+table = "wazuh_alerts"
+skip_unknown_fields = true
+date_time_best_effort = true
+auth.strategy = "basic"
+auth.user = "${CLICKHOUSE_USER:-socblitz}"
+auth.password = "${CLICKHOUSE_PASSWORD:-SocBlitz@Click1}"
+batch.max_events = 1000
+batch.timeout_secs = 5
+
+[sinks.clickhouse_vulns]
+type = "clickhouse"
+inputs = ["vuln_row"]
+endpoint = "http://clickhouse:8123"
+database = "wazuh"
+table = "wazuh_vulnerabilities"
+skip_unknown_fields = true
+date_time_best_effort = true
+auth.strategy = "basic"
+auth.user = "${CLICKHOUSE_USER:-socblitz}"
+auth.password = "${CLICKHOUSE_PASSWORD:-SocBlitz@Click1}"
+batch.max_events = 1000
+batch.timeout_secs = 5

@@ -1,0 +1,73 @@
+package main
+
+// builtinYaraLRules is the default YARA-L detection set, kept in sync with
+// engine/yaral/base.yaral so detections work out of the box when no rule
+// directory is mounted.
+const builtinYaraLRules = `
+rule ssh_brute_force {
+  meta:
+    author = "socblitz"
+    description = "SSH brute force: 5+ failed logins from one source in 5 minutes"
+    severity = "HIGH"
+    tactic = "credential_access"
+    technique = "T1110"
+    category = "authentication"
+  events:
+    $e.metadata.event_type = "USER_LOGIN"
+    $e.security_result.action = "BLOCK"
+    $e.principal.ip = $srcip
+  match:
+    $srcip over 5m
+  condition:
+    #e >= 5
+}
+
+rule ssh_root_login_success {
+  meta:
+    author = "socblitz"
+    description = "Successful SSH login as root"
+    severity = "MEDIUM"
+    tactic = "initial_access"
+    technique = "T1078"
+    category = "authentication"
+  events:
+    $e.metadata.event_type = "USER_LOGIN"
+    $e.security_result.action = "ALLOW"
+    $e.target.user.userid = "root"
+  condition:
+    $e
+}
+
+rule sudo_privilege_escalation {
+  meta:
+    author = "socblitz"
+    description = "Command executed via sudo"
+    severity = "LOW"
+    tactic = "privilege_escalation"
+    technique = "T1548.003"
+    category = "audit"
+  events:
+    $e.metadata.event_type = "PROCESS_LAUNCH"
+    $e.security_result.category = "PRIVILEGE_ESCALATION"
+  condition:
+    $e
+}
+
+rule inbound_network_scan {
+  meta:
+    author = "socblitz"
+    description = "Possible port scan: 15+ dropped inbound packets from one source in 1 minute"
+    severity = "MEDIUM"
+    tactic = "reconnaissance"
+    technique = "T1595"
+    category = "network"
+  events:
+    $e.metadata.event_type = "NETWORK_CONNECTION"
+    $e.network.direction = "INBOUND"
+    $e.principal.ip = $srcip
+  match:
+    $srcip over 1m
+  condition:
+    #e >= 15
+}
+`

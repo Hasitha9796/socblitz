@@ -39,6 +39,10 @@ celery_app.conf.update(
             "task": "app.workers.tasks.health_check_connectors",
             "schedule": 600.0,  # every 10 minutes
         },
+        "scan-darkweb-assets": {
+            "task": "app.workers.tasks.scan_darkweb_assets",
+            "schedule": 3600.0,  # hourly sweep (per-asset interval gates actual work)
+        },
     },
     task_routes={
         "app.workers.tasks.sync_wazuh_agents":      {"queue": "integrations"},
@@ -49,5 +53,7 @@ celery_app.conf.update(
         "app.workers.tasks.run_workflow":            {"queue": "default"},
         "app.workers.tasks.process_wazuh_webhook":   {"queue": "alerts"},
         "app.workers.tasks.health_check_connectors": {"queue": "default"},
+        "app.workers.tasks.scan_darkweb_asset":      {"queue": "integrations"},
+        "app.workers.tasks.scan_darkweb_assets":     {"queue": "integrations"},
     },
 )

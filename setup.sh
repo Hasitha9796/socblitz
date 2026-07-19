@@ -43,17 +43,15 @@ section "Creating directories"
 mkdir -p config/wazuh_certs data/logs data/celery data/minio
 info "Directories ready"
 
-# ── 5. vm.max_map_count (required by OpenSearch / Wazuh indexer) ──────────────
+# ── 5. System tuning ──────────────────────────────────────────────────────────
+# The OpenSearch-based indexer required a high vm.max_map_count; ClickHouse does
+# not. Kept as a light touch since it is harmless and helps other components.
 section "System tuning"
 CURRENT_MAP=$(sysctl -n vm.max_map_count 2>/dev/null || echo 0)
 if [ "$CURRENT_MAP" -lt 262144 ]; then
-    sudo sysctl -w vm.max_map_count=262144
-    grep -q vm.max_map_count /etc/sysctl.conf \
-        || echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf > /dev/null
-    info "vm.max_map_count set to 262144"
-else
-    info "vm.max_map_count = $CURRENT_MAP (OK)"
+    sudo sysctl -w vm.max_map_count=262144 2>/dev/null || true
 fi
+info "vm.max_map_count = $(sysctl -n vm.max_map_count 2>/dev/null || echo unknown)"
 
 # ── 6. Wazuh SSL certificates (native OpenSSL — works on any arch) ────────────
 section "Generating Wazuh SSL certificates"
@@ -73,14 +71,16 @@ section "Starting all services"
 echo "  [1/2] Infrastructure (postgres, redis, minio)..."
 docker compose up -d postgres redis minio
 
-echo "  [2/2] Wazuh stack (indexer → manager) and SocBlitz..."
-docker compose up -d wazuh-indexer
-echo "  Waiting for Wazuh indexer..."
-until docker compose exec -T wazuh-indexer curl -sk -u "admin:${WAZUH_INDEXER_PASSWORD:-SecretPassword}" https://localhost:9200/_cluster/health 2>/dev/null | grep -q 'green\|yellow'; do
-    printf "."; sleep 10
+echo "  [2/2] ClickHouse, SocBlitz engine and app..."
+docker compose up -d clickhouse
+echo "  Waiting for ClickHouse..."
+until docker compose exec -T clickhouse wget -q -O - http://127.0.0.1:8123/ping 2>/dev/null | grep -q Ok; do
+    printf "."; sleep 3
 done; echo " ready"
-docker compose up -d wazuh-manager
+docker compose up -d engine
 docker compose up -d backend worker beat frontend
+echo "  Tip: deploy socblitz-agent on your endpoints, or run the in-stack demo:"
+echo "       docker compose --profile agent-demo up -d agent"
 
 # ── 8. Wait for backend ───────────────────────────────────────────────────────
 section "Waiting for SocBlitz"
@@ -97,7 +97,7 @@ echo "  │           ⚡  SocBlitz is running!                       │"
 echo "  ├─────────────────────────────────────────────────────────┤"
 echo "  │  SocBlitz UI   → https://${HOST_IP}                    │"
 echo "  │  MinIO console → http://${HOST_IP}:9001                │"
-echo "  │  Wazuh API     → https://${HOST_IP}:55000              │"
+echo "  │  Engine ingest → http://${HOST_IP}:8095 · syslog :514  │"
 echo "  ├─────────────────────────────────────────────────────────┤"
 echo "  │  SocBlitz:   admin@socblitz.local / SocBlitz@Admin1!   │"
 echo "  └─────────────────────────────────────────────────────────┘"

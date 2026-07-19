@@ -185,9 +185,39 @@ export const api = {
   updateConnector:  (id: string, data: any) => apiClient.patch(`/connectors/${id}`, data),
   verifyConnector:  (id: string) => apiClient.post(`/connectors/${id}/verify`),
 
+  // SocBlitz Engine (Normalize / Parsers / YARA-L / Test / Rule Generation)
+  engineRules:         () => apiClient.get('/engine/rules'),
+  engineTestLog:       (message: string, program = '') => apiClient.post('/engine/test', { message, program }),
+  engineTestRule:      (rule: any, message: string, program = '') => apiClient.post('/engine/rules/test', { rule, message, program }),
+  // Chronicle-style: UDM normalization + YARA-L
+  engineNormalize:     (message: string, program = '') => apiClient.post('/engine/normalize', { message, program }),
+  engineTestParser:    (sample: string, yaml = '', program = '') => apiClient.post('/engine/parser/test', { yaml, sample, program }),
+  engineGenerateParser: (sample: string, hint = '') => apiClient.post('/engine/parser/generate', { sample, hint }),
+  engineGenerateYaraL:  (sample: string, hint = '') => apiClient.post('/engine/yaral/generate', { sample, hint }),
+  engineTestYaraL:     (rule: string, messages: string[], program = '') => apiClient.post('/engine/yaral/test', { rule, messages, program }),
+  engineYaraLRules:    () => apiClient.get('/engine/yaral/rules'),
+  // Parser management
+  engineListParsers:   () => apiClient.get('/engine/parsers'),
+  engineGetParser:     (name: string) => apiClient.get(`/engine/parsers/${name}`),
+  engineSaveParser:    (yaml: string) => apiClient.post('/engine/parsers', { yaml }),
+  engineDeleteParser:  (name: string) => apiClient.delete(`/engine/parsers/${name}`),
+
   // Threat Intel
   lookupIoc:    (value: string, type: string) => apiClient.post('/threat-intel/lookup', { value, type }),
   mispEvents:   () => apiClient.get('/threat-intel/misp/events'),
+
+  // Dark Web monitoring
+  darkwebSearch:      (query: string, entity_type: string) =>
+    apiClient.post('/darkweb/search', { query, entity_type }),
+  darkwebStats:       () => apiClient.get('/darkweb/stats'),
+  darkwebAssets:      () => apiClient.get('/darkweb/assets'),
+  darkwebCreateAsset: (data: { value: string; entity_type: string; label?: string }) =>
+    apiClient.post('/darkweb/assets', data),
+  darkwebScanAsset:   (id: string) => apiClient.post(`/darkweb/assets/${id}/scan`),
+  darkwebDeleteAsset: (id: string) => apiClient.delete(`/darkweb/assets/${id}`),
+  darkwebFindings:    (params?: any) => apiClient.get('/darkweb/findings', { params }),
+  darkwebUpdateFinding: (id: string, status: string) =>
+    apiClient.patch(`/darkweb/findings/${id}`, { status }),
 
   // Forensics (Velociraptor)
   agentDeployCommand: () => apiClient.get('/agent-deploy/command'),

@@ -39,11 +39,13 @@ def sync_wazuh_agents(self):
 
 async def _do_sync_agents():
     from app.db.init_db import AsyncSessionLocal
-    from app.connectors.registry import WazuhManagerClient
+    from app.connectors.registry import EngineClient
     from app.models import Agent, AgentOS, AgentStatus
     from sqlalchemy import select
 
-    client = WazuhManagerClient()
+    # Agents are now enrolled in the SocBlitz engine, not a Wazuh manager. The
+    # engine returns the same dict shape, so the mapping below is unchanged.
+    client = EngineClient()
     agents_raw = await client.list_agents()
 
     async with AsyncSessionLocal() as db:
@@ -355,6 +357,112 @@ async def _do_process_wazuh_webhook(alert_data: dict):
                 run_workflow.delay(workflow.id, run.id, run.trigger_data)
 
     enrich_alert.delay(alert.id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dark web monitoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(name="app.workers.tasks.scan_darkweb_asset", bind=True, max_retries=2)
+def scan_darkweb_asset(self, asset_id: str):
+    """Scan one monitored asset and upsert its findings."""
+    logger.info(f"Task: scan_darkweb_asset {asset_id}")
+    try:
+        _run_async(_do_scan_darkweb_asset(asset_id))
+    except Exception as exc:
+        logger.warning(f"scan_darkweb_asset {asset_id} failed: {exc}")
+        raise self.retry(exc=exc, countdown=30)
+
+
+async def _do_scan_darkweb_asset(asset_id: str):
+    from app.db.init_db import AsyncSessionLocal
+    from app.models import DarkWebAsset, DarkWebFinding, DarkWebFindingStatus, AlertSeverity
+    from app.services.darkweb import DarkWebService
+    from sqlalchemy import select
+
+    svc = DarkWebService()
+    async with AsyncSessionLocal() as db:
+        asset = (await db.execute(select(DarkWebAsset).where(DarkWebAsset.id == asset_id))).scalar_one_or_none()
+        if not asset or not asset.is_active:
+            return
+
+        try:
+            result = await svc.search(query=asset.value, entity_type=asset.entity_type.value)
+        except Exception as e:
+            asset.last_error = str(e)[:500]
+            asset.last_scanned_at = datetime.now(timezone.utc)
+            await db.commit()
+            raise
+
+        existing = {
+            f.fingerprint: f
+            for f in (await db.execute(select(DarkWebFinding).where(DarkWebFinding.asset_id == asset.id))).scalars().all()
+        }
+        now = datetime.now(timezone.utc)
+        new_count = 0
+        for f in result.get("findings", []):
+            fp = f["fingerprint"]
+            row = existing.get(fp)
+            if row is None:
+                db.add(DarkWebFinding(
+                    tenant_id=asset.tenant_id,
+                    asset_id=asset.id,
+                    fingerprint=fp,
+                    source=f["source"],
+                    entity_type=asset.entity_type,
+                    entity_value=f.get("entity_value", asset.value),
+                    title=f["title"],
+                    description=f.get("description"),
+                    severity=AlertSeverity(f.get("severity", "medium")),
+                    status=DarkWebFindingStatus.NEW,
+                    breach_name=f.get("breach_name"),
+                    exposed_data=f.get("exposed_data"),
+                    leak_date=f.get("leak_date"),
+                    raw=f.get("raw"),
+                    first_seen=now,
+                    last_seen=now,
+                ))
+                new_count += 1
+            else:
+                # Still present upstream — refresh volatile fields, keep triage status.
+                row.last_seen = now
+                row.severity = AlertSeverity(f.get("severity", row.severity.value))
+                row.exposed_data = f.get("exposed_data")
+                row.description = f.get("description")
+
+        errors = result.get("errors") or {}
+        asset.last_error = "; ".join(f"{k}: {v}" for k, v in errors.items())[:500] or None
+        asset.last_scanned_at = now
+        await db.commit()
+        logger.info(f"scan_darkweb_asset {asset_id}: {new_count} new finding(s)")
+
+
+@celery_app.task(name="app.workers.tasks.scan_darkweb_assets")
+def scan_darkweb_assets():
+    """Periodic sweep — rescan every active asset not scanned recently."""
+    _run_async(_do_scan_darkweb_assets())
+
+
+async def _do_scan_darkweb_assets():
+    from datetime import timedelta
+    from app.db.init_db import AsyncSessionLocal
+    from app.core.config import settings
+    from app.models import DarkWebAsset
+    from sqlalchemy import select, or_
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.DARKWEB_SCAN_INTERVAL_HOURS)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DarkWebAsset.id).where(
+                DarkWebAsset.is_active == True,
+                or_(DarkWebAsset.last_scanned_at == None, DarkWebAsset.last_scanned_at < cutoff),
+            )
+        )
+        ids = [row[0] for row in result.fetchall()]
+
+    for asset_id in ids:
+        scan_darkweb_asset.delay(asset_id)
+    logger.info(f"scan_darkweb_assets: queued {len(ids)} asset scan(s)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
